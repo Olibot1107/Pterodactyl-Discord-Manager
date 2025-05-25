@@ -34,41 +34,6 @@ class PteroBot extends Client {
     this.util = new Util(this);
   }
 
-  setupCustomSweepers() {
-    const sweepInterval = 3_600_000; // 1 hour in ms
-    const lifetime = 1_800_000; // 30 minutes in ms
-
-    this.sweepers = {
-      messages: setInterval(
-        () =>
-          this.sweepMessages(
-            (msg) =>
-              Date.now() - (msg.editedTimestamp ?? msg.createdTimestamp) >
-              lifetime
-          ),
-        sweepInterval
-      ),
-
-      members: setInterval(
-        () =>
-          this.sweepGuildMembers(
-            (member) =>
-              Date.now() - member.joinedTimestamp > lifetime + 300_000 &&
-              member.id !== this.user.id
-          ),
-        sweepInterval
-      ),
-
-      invites: setInterval(
-        () =>
-          this.sweepInvites(
-            (invite) => Date.now() - invite.createdTimestamp > lifetime
-          ),
-        sweepInterval
-      ),
-    };
-  }
-
   async build() {
     try {
       // Load commands
@@ -108,14 +73,12 @@ class PteroBot extends Client {
       await this.login(this.settings.TOKEN);
 
       if (this.cluster.id === 0) {
-      
         console.log(
           `Loaded ${this.commands.size} commands and ${this.events.size} events`
         );
       }
 
       this.once("ready", async () => {
-        this.setupCustomSweepers();
       });
 
       return this;

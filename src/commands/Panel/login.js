@@ -21,15 +21,19 @@ module.exports = {
     }
 
     return await context.createMessage({
-      embeds: [
-        new EmbedBuilder()
-          .setColor("Blue")
-          .setTitle("🔐 Panel Login")
-          .setDescription(
-            `📧 **Email:** \`${user.email}\`\n🧾 **Username:** \`${discordId}\`\n\nLogin at [Panel](${ptero.url})`
-          ),
-      ],
-      ephemeral: true,
-    });
+  embeds: [
+    new EmbedBuilder()
+      .setColor("Blue")
+      .setTitle("🔐 Panel Login")
+      .setDescription(
+        `📧 **Email:** \`${user.email}\`\n🧾 **Username:** \`${discordId}\`\n\nLogin at [Panel](${ptero.url})`
+      ),
+  ],
+}).then(msg => {
+  setTimeout(() => {
+    msg.delete().catch(() => null);
+  }, 15000);
+});
+
   },
 };

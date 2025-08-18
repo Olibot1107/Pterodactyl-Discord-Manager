@@ -25,12 +25,11 @@ module.exports = {
     if (!user) {
       return await context.createMessage({
         content: "❌ You are not registered. Use `/register` first.",
-        ephemeral: true,
       });
     }
 
     try {
-      // Fetch all servers
+      // Fetch all servers (consider paging if >1000)
       const serversRes = await api.get("/servers?per_page=1000");
       const servers = serversRes.data.data;
 
@@ -42,7 +41,14 @@ module.exports = {
       if (!target) {
         return await context.createMessage({
           content: "❌ Server not found. Please check the ID.",
-          ephemeral: true,
+        });
+      }
+
+      // Check if server is suspended (assuming attribute 'suspended' is boolean or number)
+      if (target.attributes.suspended) {
+        return await context.createMessage({
+          content:
+            "⚠️ This server is currently suspended and cannot be deleted via this command. Please contact support.",
         });
       }
 
@@ -50,11 +56,10 @@ module.exports = {
       if (target.attributes.user !== user.pteroId) {
         return await context.createMessage({
           content: "❌ You do not own this server.",
-          ephemeral: true,
         });
       }
 
-      // Delete using internal numeric ID
+      // Delete server using internal numeric ID
       await api.delete(`/servers/${target.attributes.id}`);
 
       return await context.createMessage({
@@ -64,13 +69,11 @@ module.exports = {
             .setTitle("🗑️ Server Deleted")
             .setDescription(`Server \`${target.attributes.name}\` has been successfully deleted.`),
         ],
-        ephemeral: true,
       });
     } catch (err) {
       console.error("Pterodactyl Error:", err.response?.data || err);
       return await context.createMessage({
         content: "❌ Failed to delete server. Please try again later.",
-        ephemeral: true,
       });
     }
   },

@@ -3,12 +3,24 @@ const {
   ButtonBuilder,
   ButtonStyle
 } = require("discord.js");
- 
+const api = require("./Ptero");
 
 class Util {
   constructor(client) {
     this.client = client;
   }
+
+async isPanelUserExists(pteroId) {
+  try {
+    const res = await api.get(`/users/${pteroId}`);
+    return res?.data?.object === "user";
+  } catch (e) {
+    if (e.response?.status === 404) return false;
+    console.error("Error checking panel user:", e);
+    return false;
+  }
+}
+
 
   async parseDuration(duration) {
     const match = duration?.trim().match(/^(\d+)(s|m|h|d)$/);

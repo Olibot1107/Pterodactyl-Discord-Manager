@@ -13,7 +13,12 @@ const Util = require("./Util");
 class PteroBot extends Client {
   constructor() {
     super({
-      intents: [GatewayIntentBits.Guilds],
+      intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.GuildMembers,
+          GatewayIntentBits.MessageContent
+      ],
       allowedMentions: { parse: ["users", "roles"], repliedUser: false },
       presence: {
         activities: [

@@ -1,9 +1,29 @@
-const { Schema, model } = require("mongoose");
+const { User: UserModel } = require('../database/database');
 
-const userSchema = new Schema({
-  discordId: { type: String, required: true, unique: true },
-  email: { type: String, required: true },
-  pteroId: { type: Number, required: true },
-});
+// Create a wrapper class to maintain compatibility with existing code
+class User {
+  constructor(data) {
+    Object.assign(this, data);
+  }
+  
+  static async findOne(query) {
+    const result = await UserModel.findOne(query);
+    return result ? new User(result) : null;
+  }
+  
+  static async deleteOne(query) {
+    return await UserModel.deleteOne(query);
+  }
+  
+  static async deleteMany(query) {
+    return await UserModel.deleteMany(query);
+  }
+  
+  async save() {
+    const result = await UserModel.create(this);
+    Object.assign(this, result);
+    return this;
+  }
+}
 
-module.exports = model("User", userSchema);
+module.exports = User;

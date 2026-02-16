@@ -1,29 +1,17 @@
 const { EmbedBuilder, ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
 
-const bannedUsers = ["1332006483600347157"];
-
-
-const whitelistedServers = [
- "c47c3ff8-7076-449d-961e-ca1b3f3c0ca3",
-  "702f85a2-6dea-4ac8-bf76-c2cd48567594",
-  "155da30d-d69e-488c-b43b-736e983ea9f4",
-  "1bc089ff-1355-4187-8c86-3a918636cf06",
-  "6df028d4-975f-4efb-83d1-2c8e613c10a4",
-  "3d64f61d-be76-4f83-a5c2-26112dc8f897",
-  "151f6d76-04ba-422e-abc8-d80588151e59",
-  "25b9f9a2-703c-41ff-a9de-6574187af462"
-];
+const bannedUsers = []; // Add Discord IDs of banned users here, e.g., ["123456789", "987654321"]
+const whitelistedServers = []; // Add UUIDs of whitelisted servers here
 
 const tiers = [   
-  { name: "Premium", cpu: 150, memory: 4096, disk: 5120, max: 5 },
-  { name: "Free", cpu: 50, memory: 512, disk: 1024, max:  45 },
+  { name: "Free", cpu: 50, memory: 514, disk: 4096, max: 1 },
 ];
 
 
 const eggs = {
   nodejs: {
-    id: 16,
+    id: 15,
     name: "Node.js",
     docker_image: "ghcr.io/parkervcp/yolks:nodejs_21",
     startup: `if [[ -d .git ]] && [[ "$AUTO_UPDATE" == "1" ]]; then git pull; fi; if [[ ! -z "$NODE_PACKAGES" ]]; then /usr/local/bin/npm install $NODE_PACKAGES; fi; if [[ ! -z "$UNNODE_PACKAGES" ]]; then /usr/local/bin/npm uninstall $UNNODE_PACKAGES; fi; if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; if [[ "$MAIN_FILE" == "*.js" ]]; then /usr/local/bin/node "/home/container/$MAIN_FILE" $NODE_ARGS; else /usr/local/bin/ts-node --esm "/home/container/$MAIN_FILE" $NODE_ARGS; fi`,
@@ -45,18 +33,6 @@ const eggs = {
       REQUIREMENTS_FILE: "requirements.txt",
       AUTO_UPDATE: "1",
       STARTUP_CMD: "python3 main.py",
-    },
-  },
-  java: {
-    id: 28,
-    name: "Java",
-    docker_image: "ghcr.io/parkervcp/yolks:java_17",
-    startup: `java -Dterminal.jline=false -Dterminal.ansi=true -jar $JARFILE`,
-    environment: {
-      USER_UPLOAD: "0",
-      JARFILE: "server.jar",
-      AUTO_UPDATE: "1",
-      STARTUP_CMD: "java -jar server.jar",
     },
   },
 };
@@ -136,8 +112,6 @@ module.exports = {
       required: true,
       choices: [
         { name: "Node.js", value: "nodejs" },
-        { name: "Python", value: "python" },
-        { name: "Java", value: "java" },
       ],
     },
     {

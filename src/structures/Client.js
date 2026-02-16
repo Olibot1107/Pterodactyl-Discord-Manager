@@ -5,10 +5,11 @@ const {
   ActivityType,
 } = require("discord.js");
 const { ClusterClient } = require("discord-hybrid-sharding");
-const mongoose = require("mongoose");
 const { readdirSync } = require("fs");
 const settings = require("../../settings");
 const Util = require("./Util");
+// SQLite3 database
+require("../database/database");
 
 class PteroBot extends Client {
   constructor() {
@@ -23,7 +24,7 @@ class PteroBot extends Client {
       presence: {
         activities: [
           {
-            name: "panel.leonodes.xyz",
+            name: "Voidium Hosting",
             type: ActivityType.Watching,
           },
         ],
@@ -66,14 +67,6 @@ class PteroBot extends Client {
           eventHandler(this, ...args)
         );
       }
-
-      // MongoDB connection
-      await mongoose.connect(this.settings.MongoDB, {
-        maxPoolSize: 6,
-        minPoolSize: 1,
-        connectTimeoutMS: 10000,
-        socketTimeoutMS: 45000,
-      });
 
       await this.login(this.settings.TOKEN);
 

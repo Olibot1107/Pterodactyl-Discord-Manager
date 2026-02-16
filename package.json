@@ -1,6 +1,6 @@
 {
   "name": "pterodactyl-discord-bot",
-  "main": "src/index.js",
+  "main": "index.js",
   "version": "1.0.0",
   "description": "A Discord bot for Pterodactyl panel that allows users to register via email OTP and create servers using commands.",
   "author": "Itz Random",
@@ -10,7 +10,7 @@
     "crypto": "^1.0.1",
     "discord-hybrid-sharding": "^2.2.5",
     "discord.js": "^14.18.0",
-    "mongoose": "^8.12.1",
-    "nodemailer": "^7.0.3"
+    "sqlite3": "^5.1.7",
+    "resend": "^3.2.0"
   }
 }

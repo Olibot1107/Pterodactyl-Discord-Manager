@@ -13,12 +13,12 @@ module.exports = {
       required: true,
     },
     {
-      name: "minutes",
-      description: "Timeout duration in minutes (1-40320)",
-      type: ApplicationCommandOptionType.Integer,
+      name: "duration",
+      description: "Timeout duration (e.g. 30s, 5m, 2h, 3d)",
+      type: ApplicationCommandOptionType.String,
       required: true,
-      min_value: 1,
-      max_value: 40320,
+      min_length: 2,
+      max_length: 10,
     },
     {
       name: "reason",
@@ -44,8 +44,38 @@ module.exports = {
     }
 
     const targetUser = context.options.getUser("user");
-    const minutes = context.options.getInteger("minutes");
+    const durationInput = (context.options.getString("duration") || "").trim().toLowerCase();
     const reason = context.options.getString("reason") || "No reason provided";
+
+    const match = durationInput.match(/^(\d+)\s*([smhd])$/i);
+    if (!match) {
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Invalid Duration",
+          description: "Use formats like `30s`, `5m`, `2h`, or `3d`.",
+        })
+      );
+    }
+
+    const amount = Number(match[1]);
+    const unit = match[2];
+    const multiplier = {
+      s: 1_000,
+      m: 60_000,
+      h: 3_600_000,
+      d: 86_400_000,
+    }[unit];
+    const durationMs = amount * multiplier;
+    const maxTimeoutMs = 28 * 24 * 60 * 60 * 1000; // Discord max: 28 days
+
+    if (!Number.isFinite(durationMs) || durationMs <= 0 || durationMs > maxTimeoutMs) {
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Duration Out Of Range",
+          description: "Duration must be greater than 0 and at most `28d`.",
+        })
+      );
+    }
 
     if (!targetUser) {
       return context.createMessage(
@@ -94,7 +124,7 @@ module.exports = {
     }
 
     try {
-      await member.timeout(minutes * 60 * 1000, reason);
+      await member.timeout(durationMs, reason);
     } catch (err) {
       console.error("[Timeout] Failed to apply timeout:", err);
       return context.createMessage(
@@ -111,7 +141,7 @@ module.exports = {
         description: "Timeout completed.",
         details: [
           `├─ **User:** <@${targetUser.id}>`,
-          `├─ **Duration:** ${minutes} minute(s)`,
+          `├─ **Duration:** ${durationInput}`,
           `└─ **Reason:** ${reason}`,
         ],
       })

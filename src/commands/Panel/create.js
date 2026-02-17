@@ -189,7 +189,7 @@ module.exports = {
               `🍳 **Type:** \`${egg.name}\`\n` +
               `📊 **Servers:** \`${currentCount + 1}/${serverMax}\`\n` +
               `🎖️ **Tier:** \`${tierLabel}\`\n` +
-              `🔗 [View on Panel](https://panel.leonodes.xyz/server/${res.data.attributes.identifier})`
+              `🔗 [View on Panel](https://voidium.uk/server/${res.data.attributes.identifier})`
             ),
         ],
       });

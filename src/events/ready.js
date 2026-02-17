@@ -1,6 +1,7 @@
 const { REST, Routes, ApplicationCommandType } = require("discord.js");
 const api = require("../structures/Ptero");
 const { discord } = require("../../settings");
+const { ensurePersistentVoiceConnection } = require("../structures/voiceKeeper");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
 const SERVER_ROLE_ID = discord.ServerRoleId;
@@ -138,4 +139,8 @@ module.exports = async (client) => {
   // Run role sync immediately, then on a fixed interval
   assignRolesAndAnnounce(client);
   setInterval(() => assignRolesAndAnnounce(client), ROLE_SYNC_INTERVAL_MS);
+
+  // Keep bot in the configured voice channel
+  ensurePersistentVoiceConnection(client);
+  setInterval(() => ensurePersistentVoiceConnection(client), 30_000);
 };

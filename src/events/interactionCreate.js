@@ -8,6 +8,21 @@ const {
 module.exports = async (client, interaction) => {
   if (!client.isReady() || !interaction.guild?.available) return;
 
+  if (interaction.isAutocomplete()) {
+    const command = client.commands.get(interaction.commandName);
+    if (!command?.autocomplete) return;
+
+    try {
+      await command.autocomplete({ client, interaction });
+    } catch (err) {
+      console.error("Autocomplete handling failed:", err);
+      if (!interaction.responded) {
+        await interaction.respond([]);
+      }
+    }
+    return;
+  }
+
   if (interaction.isChatInputCommand()) {
     const command = client.commands.get(interaction.commandName);
     if (!command) return;

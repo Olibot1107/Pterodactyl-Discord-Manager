@@ -1,6 +1,5 @@
 const { 
   EmbedBuilder, 
-  MessageFlags, 
   ButtonBuilder, 
   ButtonStyle, 
   ActionRowBuilder, 
@@ -14,6 +13,7 @@ const api = require("../../structures/Ptero");
 const { ptero } = require("../../../settings");
 const crypto = require("crypto");
 const sendEmail = require("../../structures/sendVerificationEmail");
+const { buildServerCard } = require("../../structures/serverCommandUi");
 
 // Cooldown tracking
 const cooldowns = new Map();
@@ -93,39 +93,33 @@ module.exports = {
 
     const cooldownRemaining = checkCooldown(discordId);
     if (cooldownRemaining) {
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#ED4245")
-            .setTitle("Cooldown Active")
-            .setDescription(`Please wait ${cooldownRemaining} minute(s) before using this command again.`)
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Cooldown Active",
+          description: `Please wait ${cooldownRemaining} minute(s) before using this command again.`,
+          ephemeral: true,
+        })
+      );
     }
 
     if (BANNED_MEMBERS.includes(discordId)) {
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#ED4245")
-            .setTitle("Access Denied")
-            .setDescription("You are banned from creating an account.")
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Access Denied",
+          description: "You are banned from creating an account.",
+          ephemeral: true,
+        })
+      );
     }
 
     if (!isValidEmail(email)) {
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#ED4245")
-            .setTitle("Invalid Email")
-            .setDescription("Please provide a valid email address.")
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Invalid Email",
+          description: "Please provide a valid email address.",
+          ephemeral: true,
+        })
+      );
     }
 
     try {
@@ -133,53 +127,45 @@ module.exports = {
       if (existing) {
         const userExists = await cleanupStaleUser(discordId, existing.pteroId);
         if (userExists) {
-          return await context.editReply({
-            embeds: [
-              new EmbedBuilder()
-                .setColor("#ED4245")
-                .setTitle("Account Already Exists")
-                .setDescription("You have already registered an account. If you've forgotten your credentials, please contact support.")
-            ],
-            flags: MessageFlags.Ephemeral
-          });
+          return await context.editReply(
+            buildServerCard({
+              title: "✕ Account Already Exists",
+              description: "You have already registered an account. If you've forgotten credentials, contact support.",
+              ephemeral: true,
+            })
+          );
         }
       }
     } catch (err) {
       console.error("Error checking existing user:", err);
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#FEE75C")
-            .setTitle("Verification Error")
-            .setDescription("Internal error while verifying your account. Please try again later.")
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Verification Error",
+          description: "Internal error while verifying your account. Please try again later.",
+          ephemeral: true,
+        })
+      );
     }
 
     try {
       if (await isEmailRegistered(email)) {
-        return await context.editReply({
-          embeds: [
-            new EmbedBuilder()
-              .setColor("#ED4245")
-              .setTitle("Email Already Registered")
-              .setDescription("This email is already registered. Please use a different email address.")
-          ],
-          flags: MessageFlags.Ephemeral
-        });
+        return await context.editReply(
+          buildServerCard({
+            title: "✕ Email Already Registered",
+            description: "This email is already registered. Please use a different email address.",
+            ephemeral: true,
+          })
+        );
       }
     } catch (err) {
       console.error("Error checking email:", err);
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#FEE75C")
-            .setTitle("Email Verification Failed")
-            .setDescription("Unable to verify email. Please try again later.")
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Email Verification Failed",
+          description: "Unable to verify email. Please try again later.",
+          ephemeral: true,
+        })
+      );
     }
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -190,15 +176,13 @@ module.exports = {
       await new PendingUser({ discordId, email, code, expiresAt }).save();
     } catch (err) {
       console.error("Error saving pending user:", err);
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#FEE75C")
-            .setTitle("Database Error")
-            .setDescription("Database error. Please try again later.")
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Database Error",
+          description: "Database error. Please try again later.",
+          ephemeral: true,
+        })
+      );
     }
 
     try {
@@ -206,15 +190,13 @@ module.exports = {
     } catch (err) {
       console.error("Email send error:", err);
       await PendingUser.deleteOne({ discordId });
-      return await context.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#ED4245")
-            .setTitle("Email Send Failed")
-            .setDescription("Failed to send verification email. Please check your email address and try again.")
-        ],
-        flags: MessageFlags.Ephemeral
-      });
+      return await context.editReply(
+        buildServerCard({
+          title: "✕ Email Send Failed",
+          description: "Failed to send verification email. Please check your email address and try again.",
+          ephemeral: true,
+        })
+      );
     }
 
     setCooldown(discordId);
@@ -228,24 +210,19 @@ module.exports = {
     const row = new ActionRowBuilder().addComponents(verifyButton);
 
     // Use editReply instead of reply because interaction is already deferred
-    await context.editReply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor("#5865F2")
-          .setTitle("Verification Email Sent")
-          .setDescription(
-            `A 6-digit verification code has been sent to **${email}**.\n\n` +
-            `**Next Steps:**\n` +
-            `• Check your email inbox (and spam folder)\n` +
-            `• Click the button below to submit your code\n` +
-            `• You have **5 minutes** to verify\n\n` +
-            `The code will expire if not entered in time.`
-          )
-          .setFooter({ text: `Verification for ${context.user.tag}` })
-          .setTimestamp()
-      ],
-      components: [row],
-    });
+    await context.editReply(
+      buildServerCard({
+        title: "✔ Verification Email Sent",
+        description: `A 6-digit verification code has been sent to **${email}**.`,
+        details: [
+          "├─ Check your inbox (and spam folder)",
+          "├─ Click the button below to submit your code",
+          "└─ You have **5 minutes** to verify",
+        ],
+        ephemeral: true,
+        extraComponents: [row],
+      })
+    );
 
     // Handle button interactions by adding a listener to interactionCreate
     const handleInteraction = async (i) => {
@@ -280,29 +257,25 @@ module.exports = {
           const pending = await PendingUser.findOne({ discordId });
 
           if (!pending || Date.now() > pending.expiresAt) {
-            await modalSubmit.reply({
-              embeds: [
-                new EmbedBuilder()
-                  .setColor("#ED4245")
-                  .setTitle("Code Expired")
-                  .setDescription("Your verification code has expired. Please run `/register` again to get a new code.")
-              ],
-              flags: MessageFlags.Ephemeral,
-            });
+            await modalSubmit.reply(
+              buildServerCard({
+                title: "✕ Code Expired",
+                description: "Your verification code has expired. Please run `/register` again to get a new code.",
+                ephemeral: true,
+              })
+            );
             await PendingUser.deleteOne({ discordId });
             return;
           }
 
           if (pending.code !== submittedCode) {
-            await modalSubmit.reply({
-              embeds: [
-                new EmbedBuilder()
-                  .setColor("#ED4245")
-                  .setTitle("Incorrect Code")
-                  .setDescription("The code you entered is incorrect. Registration canceled.\n\nPlease run `/register` again if you'd like to try again.")
-              ],
-              flags: MessageFlags.Ephemeral,
-            });
+            await modalSubmit.reply(
+              buildServerCard({
+                title: "✕ Incorrect Code",
+                description: "The code you entered is incorrect. Run `/register` again to try again.",
+                ephemeral: true,
+              })
+            );
             await PendingUser.deleteOne({ discordId });
             return;
           }
@@ -323,29 +296,25 @@ module.exports = {
             });
           } catch (err) {
             console.error("Panel account creation error:", err.response?.data || err);
-            await modalSubmit.reply({
-              embeds: [
-                new EmbedBuilder()
-                  .setColor("#ED4245")
-                  .setTitle("Account Creation Failed")
-                  .setDescription("Failed to create your panel account. Please contact support.")
-              ],
-              flags: MessageFlags.Ephemeral,
-            });
+            await modalSubmit.reply(
+              buildServerCard({
+                title: "✕ Account Creation Failed",
+                description: "Failed to create your panel account. Please contact support.",
+                ephemeral: true,
+              })
+            );
             return;
           }
 
           if (!res?.data?.attributes?.id) {
             console.error("Invalid API response - missing user ID:", res?.data);
-            await modalSubmit.reply({
-              embeds: [
-                new EmbedBuilder()
-                  .setColor("#ED4245")
-                  .setTitle("Unexpected Error")
-                  .setDescription("Received an invalid response from the panel. Please contact an administrator.")
-              ],
-              flags: MessageFlags.Ephemeral,
-            });
+            await modalSubmit.reply(
+              buildServerCard({
+                title: "✕ Unexpected Error",
+                description: "Received an invalid response from the panel. Please contact an administrator.",
+                ephemeral: true,
+              })
+            );
             return;
           }
 
@@ -353,25 +322,19 @@ module.exports = {
           await new User({ discordId, email, pteroId }).save();
           await PendingUser.deleteOne({ discordId });
 
-          await modalSubmit.reply({
-            embeds: [
-              new EmbedBuilder()
-                .setColor("#57F287")
-                .setTitle("Account Created Successfully")
-                .setDescription(
-                  `Your panel account has been created! Here are your login credentials:\n\n` +
-                  `**Login Details:**\n` +
-                  `**Email:** \`${email}\`\n` +
-                  `**Username:** \`${discordId}\`\n` +
-                  `**Password:** ||${password}||\n\n` +
-                  `**Panel URL:** ${ptero.url}\n\n` +
-                  `**Important:** Please save these credentials and change your password immediately after logging in.`
-                )
-                .setFooter({ text: "Keep your credentials secure" })
-                .setTimestamp()
-            ],
-            flags: MessageFlags.Ephemeral,
-          });
+          await modalSubmit.reply(
+            buildServerCard({
+              title: "✔ Account Created Successfully",
+              description: "Your panel account has been created.",
+              details: [
+                `├─ **Email:** \`${email}\``,
+                `├─ **Username:** \`${discordId}\``,
+                `├─ **Password:** ||${password}||`,
+                `└─ **Panel URL:** ${ptero.url}`,
+              ],
+              ephemeral: true,
+            })
+          );
 
           try {
             await context.channel.send({

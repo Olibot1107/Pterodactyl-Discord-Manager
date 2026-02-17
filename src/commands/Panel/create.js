@@ -1,18 +1,17 @@
-const { EmbedBuilder, ApplicationCommandOptionType } = require("discord.js");
+const { ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
+const { ptero, serverCreation } = require("../../../settings");
+const {
+  buildServerCard,
+  buildServerCooldownCard,
+  consumeServerCooldown,
+} = require("../../structures/serverCommandUi");
 
 const bannedUsers = []; // Discord IDs of banned users, e.g., ["123456789"]
 const whitelistedServers = []; // UUIDs of whitelisted servers
 
-// --- Role-based server limits ---
-// Roles are checked top-to-bottom; the FIRST match wins.
-// Add your Discord role IDs and how many servers that role allows.
-const roleLimits = [
-  { roleId: "ROLE_ID_HERE", max: 3, label: "VIP" },
-  { roleId: "ROLE_ID_HERE", max: 2, label: "Supporter" },
-  // Users with no matching role fall back to defaultMax below
-];
-const defaultMax = 1; // Default for users with no special role
+const roleLimits = serverCreation?.roleLimits || [];
+const defaultMax = Number.isInteger(serverCreation?.defaultMax) ? serverCreation.defaultMax : 1;
 
 const eggs = {
   nodejs: {
@@ -124,37 +123,67 @@ module.exports = {
 
   run: async ({ client, context }) => {
     const discordId = context.user.id;
+    const cooldownRemaining = consumeServerCooldown(discordId);
+
+    if (cooldownRemaining) {
+      return context.createMessage(buildServerCooldownCard(cooldownRemaining));
+    }
 
     if (bannedUsers.includes(discordId)) {
-      return context.createMessage({ content: "🚫 You are banned from creating new servers." });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Access Denied",
+          description: "You are banned from creating new servers.",
+        })
+      );
     }
 
     const eggKey = context.options.getString("egg");
     const serverName = context.options.getString("servername");
     const egg = eggs[eggKey];
-    if (!egg) return context.createMessage({ content: "❌ Invalid egg selection." });
+    if (!egg) {
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Invalid Selection",
+          description: "Invalid egg selection.",
+        })
+      );
+    }
 
     // Fetch the guild member so we can check their roles
     const member = context.member ?? await context.guild?.members.fetch(discordId).catch(() => null);
     if (!member) {
-      return context.createMessage({ content: "❌ Could not resolve your guild membership." });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Verification Failed",
+          description: "Could not resolve your guild membership.",
+        })
+      );
     }
 
-    const { max: serverMax, label: tierLabel } = getMaxServersForMember(member);
+    const { max: serverMax } = getMaxServersForMember(member);
 
     const pteroUser = await getUserByDiscordId(discordId);
     if (!pteroUser) {
-      return context.createMessage({ content: "❌ No Pterodactyl user linked. Please register first." });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Not Registered",
+          description: "No panel user linked. Please register first.",
+        })
+      );
     }
 
     const currentCount = await getUserServerCount(pteroUser.attributes.id);
     if (currentCount >= serverMax) {
-      return context.createMessage({
-        content:
-          serverMax === 1
-            ? `⚠️ You already own a server. Your plan only allows **1** server per account.`
-            : `⚠️ You have reached your server limit (**${currentCount}/${serverMax}**). Upgrade your role to create more.`,
-      });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Limit Reached",
+          description:
+            serverMax === 1
+              ? "You can only have one server at a time."
+              : `You have reached your server limit (**${currentCount}/${serverMax}**).`,
+        })
+      );
     }
 
     try {
@@ -179,23 +208,31 @@ module.exports = {
         start_on_completion: true,
       });
 
-      return context.createMessage({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("Green")
-            .setTitle("✅ Server Created")
-            .setDescription(
-              `🖥️ **Name:** \`${serverName}\`\n` +
-              `🍳 **Type:** \`${egg.name}\`\n` +
-              `📊 **Servers:** \`${currentCount + 1}/${serverMax}\`\n` +
-              `🎖️ **Tier:** \`${tierLabel}\`\n` +
-              `🔗 [View on Panel](https://voidium.uk/server/${res.data.attributes.identifier})`
-            ),
-        ],
-      });
+      return context.createMessage(
+        buildServerCard({
+          title: "✔ Server Created!",
+          description: "Your server is being provisioned.",
+          details: [
+            `├─ **Name:** ${serverName}`,
+            `├─ **Environment:** ${egg.name.replace(".", "")}`,
+            `├─ **RAM:** ${serverLimits.memory}MB`,
+            `└─ **Disk:** ${serverLimits.disk}MB`,
+          ],
+          button: {
+            label: "Open Panel",
+            url: `${ptero.url}/server/${res.data.attributes.identifier}`,
+          },
+          buttonDivider: true,
+        })
+      );
     } catch (err) {
       console.error("Error creating server:", err.response?.data || err.message || err);
-      return context.createMessage({ content: "❌ Failed to create server. Please try again later." });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Creation Failed",
+          description: "Failed to create server. Please try again later.",
+        })
+      );
     }
   },
 };

@@ -1,6 +1,6 @@
-const { EmbedBuilder } = require("discord.js");
 const User = require("../../models/User");
 const api = require("../../structures/Ptero");
+const { buildServerCard } = require("../../structures/serverCommandUi");
 
 module.exports = {
   name: "deleteaccount",
@@ -8,18 +8,24 @@ module.exports = {
   run: async ({ client, context }) => {
     const discordId = context.user?.id;
     if (!discordId) {
-      return context.createMessage({
-        content: "❌ Internal error: Unable to retrieve your user ID.",
-        ephemeral: true,
-      });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Internal Error",
+          description: "Unable to retrieve your user ID.",
+          ephemeral: true,
+        })
+      );
     }
 
     const user = await User.findOne({ discordId });
     if (!user) {
-      return context.createMessage({
-        content: "❌ You don’t have an account registered with us.",
-        ephemeral: true,
-      });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Not Registered",
+          description: "You don’t have an account registered with us.",
+          ephemeral: true,
+        })
+      );
     }
 
     try {
@@ -32,11 +38,13 @@ module.exports = {
       // Check for any suspended servers
       const suspended = userServers.find(s => s.attributes.suspended);
       if (suspended) {
-        return context.createMessage({
-          content:
-            "⚠️ Account cannot be deleted because one or more of your servers are currently suspended. Please contact support.",
-          ephemeral: true,
-        });
+        return context.createMessage(
+          buildServerCard({
+            title: "✕ Action Blocked",
+            description: "Account cannot be deleted because one or more servers are suspended. Please contact support.",
+            ephemeral: true,
+          })
+        );
       }
 
       // Proceed to delete all user servers
@@ -49,23 +57,27 @@ module.exports = {
       await api.delete(`/users/${user.pteroId}`);
       await User.deleteOne({ discordId });
 
-      return context.createMessage({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#FF0000")
-            .setTitle("🗑️ Account Deleted")
-            .setDescription("✅ Your panel account and all associated servers have been permanently deleted.")
-            .setFooter({ text: "This message is visible only to you." }),
-        ],
-        ephemeral: true,
-      });
+      return context.createMessage(
+        buildServerCard({
+          title: "✔ Account Deleted",
+          description: "Your panel account and all associated servers have been permanently deleted.",
+          details: [
+            `├─ **Deleted Servers:** ${userServers.length}`,
+            `└─ **Deleted By:** ${context.user.username}.`,
+          ],
+          ephemeral: true,
+        })
+      );
 
     } catch (err) {
       console.error("Account deletion error:", err.message, err.response?.data || err);
-      return context.createMessage({
-        content: "❌ Failed to delete your account. Please try again later.",
-        ephemeral: true,
-      });
+      return context.createMessage(
+        buildServerCard({
+          title: "✕ Delete Failed",
+          description: "Failed to delete your account. Please try again later.",
+          ephemeral: true,
+        })
+      );
     }
   },
 };

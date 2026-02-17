@@ -6,24 +6,20 @@ A Discord bot for managing user registration, server creation, and administratio
 
 - **User Registration:** Register with email verification and OTP.
 - **Server Creation:** Create servers with resource tiers (Free/Premium) and select from Node.js, Python, or Java eggs.
-- **Account Management:** Login, delete account, and view slot usage.
-- **Admin Tools:** Delete all servers, modify server resources, delete ticket channels, and more.
+- **Account Management:** Delete account and view owned servers.
+- **Admin Tools:** Suspend/unsuspend servers, timeout users, and ban users.
 - **Role Sync:** Automatically assign roles based on server ownership.
-- **Slot Announcements:** Notifies users when server slots are available.
-- **Cost Analysis:** Estimate monthly costs for custom server specs.
 
 ## Commands
 
 - `/register <email>` – Register a new panel account.
-- `/login` – Get your panel login details.
 - `/create <egg> <servername>` – Create a new server.
 - `/delete <serverid>` – Delete one of your servers.
 - `/deleteaccount` – Delete your panel account and all servers.
-- `/slots` – Show current usage vs. max slots for each tier.
-- `/costanalysis` – Estimate monthly cost for custom resources.
-- `/deletetickets` – (Admin) Delete all ticket channels in the specified category.
-- `/deleteall` – (Admin) Delete all servers except whitelisted ones.
-- `/modify` – (Admin) Modify resources for all non-premium, non-whitelisted servers.
+- `/list` – View your servers.
+- `/server <start|stop|restart|kill|status|suspend|unsuspend>` – Manage server power and suspension.
+- `/timeout <user> <minutes> [reason]` – (Admin) Timeout user and suspend all their servers.
+- `/ban <user> [reason] [prune_hours]` – (Admin) Ban user from the guild.
 - `/ping` – Check bot latency.
 
 ## Setup
@@ -50,11 +46,10 @@ A Discord bot for managing user registration, server creation, and administratio
 
 3. **Configure settings:**
    - Copy `settings.js` and fill in your credentials:
-     - Discord bot token
-     - MongoDB connection string
-     - Admin Discord user ID
-     - Ticket category ID
-     - Pterodactyl panel URL and API keys
+   - Discord bot token
+   - MongoDB connection string
+   - Admin Discord user ID
+    - Pterodactyl panel URL and API keys
 
 4. **Configure SMTP for email verification:**
    - Edit [`src/structures/sendVerificationEmail.js`](src/structures/sendVerificationEmail.js) and set your SMTP credentials.
@@ -74,4 +69,4 @@ A Discord bot for managing user registration, server creation, and administratio
 
 ## Notes
 
-- Only the admin (set in `settings.js`) can use destructive commands like `/deletetickets`, `/deleteall`, and `/modify`.
+- Only admins can use moderation commands like `/server suspend`, `/server unsuspend`, `/timeout`, and `/ban`.

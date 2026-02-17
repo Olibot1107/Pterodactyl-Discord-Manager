@@ -95,18 +95,12 @@ function buildCommandOptions() {
 
   baseSubcommands.push({
     name: "suspend",
-    description: "Suspend one of a user's servers",
+    description: "Suspend any server",
     type: ApplicationCommandOptionType.Subcommand,
     options: [
       {
-        name: "user",
-        description: "User whose server you want to suspend",
-        type: ApplicationCommandOptionType.User,
-        required: true,
-      },
-      {
         name: "server",
-        description: "Choose one of that user's servers",
+        description: "Choose any active server",
         type: ApplicationCommandOptionType.String,
         required: true,
         autocomplete: true,
@@ -116,18 +110,12 @@ function buildCommandOptions() {
 
   baseSubcommands.push({
     name: "unsuspend",
-    description: "Unsuspend one of a user's servers",
+    description: "Unsuspend any server",
     type: ApplicationCommandOptionType.Subcommand,
     options: [
       {
-        name: "user",
-        description: "User whose server you want to unsuspend",
-        type: ApplicationCommandOptionType.User,
-        required: true,
-      },
-      {
         name: "server",
-        description: "Choose one of that user's servers",
+        description: "Choose any suspended server",
         type: ApplicationCommandOptionType.String,
         required: true,
         autocomplete: true,
@@ -146,18 +134,23 @@ module.exports = {
   autocomplete: async ({ interaction }) => {
     const discordId = interaction.user.id;
     const subcommand = interaction.options.getSubcommand();
-    const targetUser =
-      (subcommand === "suspend" || subcommand === "unsuspend")
-        ? interaction.options.getUser("user")
-        : null;
-    const lookupDiscordId = targetUser?.id || discordId;
     const focused = interaction.options.getFocused().toLowerCase();
 
     try {
-      const { user, ownedServers } = await getUserAndOwnedServers(lookupDiscordId);
-      if (!user) return interaction.respond([]);
+      let serverPool = [];
+      if (subcommand === "suspend" || subcommand === "unsuspend") {
+        const isAdmin =
+          interaction.user.id === adminid ||
+          interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+        if (!isAdmin) return interaction.respond([]);
+        serverPool = await fetchAllServers();
+      } else {
+        const { user, ownedServers } = await getUserAndOwnedServers(discordId);
+        if (!user) return interaction.respond([]);
+        serverPool = ownedServers;
+      }
 
-      const filteredServers = ownedServers.filter((s) => {
+      const filteredServers = serverPool.filter((s) => {
         if (subcommand === "suspend") return !s.attributes.suspended;
         if (subcommand === "unsuspend") return !!s.attributes.suspended;
         return true;
@@ -203,32 +196,13 @@ module.exports = {
           );
         }
 
-        const targetDiscordUser = context.options.getUser("user");
-        if (!targetDiscordUser) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Missing User",
-              description: "Please provide a target user.",
-            })
-          );
-        }
-
-        const { user: targetUser, ownedServers: targetServers } = await getUserAndOwnedServers(targetDiscordUser.id);
-        if (!targetUser) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Not Registered",
-              description: "That user is not registered.",
-            })
-          );
-        }
-
-        const target = targetServers.find((s) => s.attributes.identifier === identifier);
+        const allServers = await fetchAllServers();
+        const target = allServers.find((s) => s.attributes.identifier === identifier);
         if (!target) {
           return context.createMessage(
             buildServerCard({
               title: "✕ Server Not Found",
-              description: "That server was not found in the selected user's account.",
+              description: "That server was not found.",
             })
           );
         }
@@ -261,7 +235,7 @@ module.exports = {
                 ? `**${target.attributes.name}** has been suspended.`
                 : `**${target.attributes.name}** has been unsuspended.`,
             details: [
-              `├─ **User:** ${targetDiscordUser.tag}`,
+              `├─ **Owner ID:** ${target.attributes.user}`,
               `├─ **Server:** ${target.attributes.name}`,
               `├─ **Identifier:** ${identifier}`,
               `└─ **Action By:** ${context.user.username}`,

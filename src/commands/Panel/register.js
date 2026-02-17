@@ -13,40 +13,65 @@ const CODE_EXPIRY = 5 * 60 * 1000; // 5 minutes
 const BANNED_MEMBERS = ["1332006483600347157"];
 const ALLOWED_CATEGORY_ID = "1375517232733618227";
 
+/**
+ * Generates a cryptographically secure random password
+ */
 function generatePassword(length = 16) {
   const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=";
   const bytes = crypto.randomBytes(length);
   let password = "";
+  
   for (let i = 0; i < length; i++) {
     password += charset[bytes[i] % charset.length];
   }
+  
   return password;
 }
 
+/**
+ * Validates email format
+ */
 function isValidEmail(email) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);
 }
 
+/**
+ * Checks and enforces cooldown
+ */
 function checkCooldown(discordId) {
   if (!cooldowns.has(discordId)) return null;
+  
   const lastUsed = cooldowns.get(discordId);
   const timeElapsed = Date.now() - lastUsed;
+  
   if (timeElapsed < COOLDOWN_TIME) {
-    return Math.ceil((COOLDOWN_TIME - timeElapsed) / 1000 / 60);
+    const remaining = Math.ceil((COOLDOWN_TIME - timeElapsed) / 1000 / 60);
+    return remaining;
   }
+  
   return null;
 }
 
+/**
+ * Sets cooldown for a user
+ */
 function setCooldown(discordId) {
   cooldowns.set(discordId, Date.now());
   setTimeout(() => cooldowns.delete(discordId), COOLDOWN_TIME);
 }
 
+/**
+ * Cleans up existing user if panel account doesn't exist
+ */
 async function cleanupStaleUser(discordId, pteroId) {
   try {
     const panelUser = await api.get(`/users/${pteroId}`);
-    if (panelUser?.data?.object === "user") return true;
+    
+    if (panelUser?.data?.object === "user") {
+      return true; // User exists on panel
+    }
+    
     await User.deleteOne({ discordId });
     return false;
   } catch (err) {
@@ -58,10 +83,14 @@ async function cleanupStaleUser(discordId, pteroId) {
   }
 }
 
+/**
+ * Checks if email is already registered on the panel
+ */
 async function isEmailRegistered(email) {
   const emailCheck = await api.get("/users", {
     searchParams: { filter: email },
   });
+  
   return emailCheck.data?.data?.some(
     (u) => u.attributes.email.toLowerCase() === email.toLowerCase()
   );
@@ -80,72 +109,104 @@ module.exports = {
   ],
 
   run: async ({ client, context }) => {
+    // Defer reply immediately to prevent timeout
+    await context.deferReply({ flags: MessageFlags.Ephemeral });
+    
     const discordId = context.user.id;
     const email = context.options.getString("email").trim();
 
-    // Helper to reply/editReply in the original channel
-    const replyMethod = context.deferred || context.replied ? "editReply" : "reply";
-
-    // Helper: send ephemeral error in channel
-    const channelError = (title, description) =>
-      context[replyMethod]({
-        embeds: [new EmbedBuilder().setColor("#ED4245").setTitle(title).setDescription(description)],
-        ephemeral: true,
-      });
-
-    // --- Pre-checks (done in channel before opening DMs) ---
-
+    // Check cooldown
     const cooldownRemaining = checkCooldown(discordId);
     if (cooldownRemaining) {
-      return channelError("Cooldown Active", `Please wait ${cooldownRemaining} minute(s) before using this command again.`);
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#ED4245")
+            .setTitle("Cooldown Active")
+            .setDescription(`Please wait ${cooldownRemaining} minute(s) before using this command again.`),
+        ],
+      });
     }
 
+    // Check if user is banned
     if (BANNED_MEMBERS.includes(discordId)) {
-      return channelError("Access Denied", "You are banned from creating an account.");
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#ED4245")
+            .setTitle("Access Denied")
+            .setDescription("You are banned from creating an account."),
+        ],
+      });
     }
 
+    // Validate email
     if (!isValidEmail(email)) {
-      return channelError("Invalid Email", "Please provide a valid email address.");
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#ED4245")
+            .setTitle("Invalid Email")
+            .setDescription("Please provide a valid email address."),
+        ],
+      });
     }
 
+    // Check if user already exists
     try {
       const existing = await User.findOne({ discordId });
+      
       if (existing) {
         const userExists = await cleanupStaleUser(discordId, existing.pteroId);
+        
         if (userExists) {
-          return channelError("Account Already Exists", "You have already registered an account. If you've forgotten your credentials, please contact support.");
+          return context.editReply({
+            embeds: [
+              new EmbedBuilder()
+                .setColor("#ED4245")
+                .setTitle("Account Already Exists")
+                .setDescription("You have already registered an account. If you've forgotten your credentials, please contact support."),
+            ],
+          });
         }
       }
     } catch (err) {
       console.error("Error checking existing user:", err);
-      return context[replyMethod]({
-        embeds: [new EmbedBuilder().setColor("#FEE75C").setTitle("Verification Error").setDescription("Internal error while verifying your account. Please try again later.")],
-        ephemeral: true,
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#FEE75C")
+            .setTitle("Verification Error")
+            .setDescription("Internal error while verifying your account. Please try again later."),
+        ],
       });
     }
 
+    // Check if email is already registered
     try {
       if (await isEmailRegistered(email)) {
-        return channelError("Email Already Registered", "This email is already registered. Please use a different email address.");
+        return context.editReply({
+          embeds: [
+            new EmbedBuilder()
+              .setColor("#ED4245")
+              .setTitle("Email Already Registered")
+              .setDescription("This email is already registered. Please use a different email address."),
+          ],
+        });
       }
     } catch (err) {
       console.error("Error checking email:", err);
-      return context[replyMethod]({
-        embeds: [new EmbedBuilder().setColor("#FEE75C").setTitle("Email Verification Failed").setDescription("Unable to verify email. Please try again later.")],
-        ephemeral: true,
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#FEE75C")
+            .setTitle("Email Verification Failed")
+            .setDescription("Unable to verify email. Please try again later."),
+        ],
       });
     }
 
-    // --- Try to open a DM ---
-    let dmChannel;
-    try {
-      dmChannel = await context.user.createDM();
-    } catch (err) {
-      console.error("Failed to open DM:", err);
-      return channelError("DMs Disabled", "I couldn't send you a DM. Please enable DMs from server members and try again.");
-    }
-
-    // --- Generate and save verification code ---
+    // Generate and save verification code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = Date.now() + CODE_EXPIRY;
 
@@ -154,25 +215,36 @@ module.exports = {
       await new PendingUser({ discordId, email, code, expiresAt }).save();
     } catch (err) {
       console.error("Error saving pending user:", err);
-      return context[replyMethod]({
-        embeds: [new EmbedBuilder().setColor("#FEE75C").setTitle("Database Error").setDescription("Database error. Please try again later.")],
-        ephemeral: true,
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#FEE75C")
+            .setTitle("Database Error")
+            .setDescription("Database error. Please try again later."),
+        ],
       });
     }
 
-    // --- Send verification email ---
+    // Send verification email
     try {
       await sendEmail(email, code);
     } catch (err) {
       console.error("Email send error:", err);
       await PendingUser.deleteOne({ discordId });
-      return channelError("Email Send Failed", "Failed to send verification email. Please check your email address and try again.");
+      return context.editReply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#ED4245")
+            .setTitle("Email Send Failed")
+            .setDescription("Failed to send verification email. Please check your email address and try again."),
+        ],
+      });
     }
 
-    // Set cooldown after successful email send
+    // Set cooldown only after successful email send
     setCooldown(discordId);
 
-    // --- Send verify button via DM ---
+    // Create button for code submission
     const verifyButton = new ButtonBuilder()
       .setCustomId(`verify_code_${discordId}`)
       .setLabel("Enter Verification Code")
@@ -181,53 +253,36 @@ module.exports = {
 
     const row = new ActionRowBuilder().addComponents(verifyButton);
 
-    let dmMessage;
-    try {
-      dmMessage = await dmChannel.send({
-        embeds: [
-          new EmbedBuilder()
-            .setColor("#5865F2")
-            .setTitle("Verification Email Sent")
-            .setDescription(
-              `A 6-digit verification code has been sent to **${email}**.\n\n` +
-              `**Next Steps:**\n` +
-              `• Check your email inbox (and spam folder)\n` +
-              `• Click the button below to submit your code\n` +
-              `• You have **5 minutes** to verify\n\n` +
-              `The code will expire if not entered in time.`
-            )
-            .setFooter({ text: `Verification for ${context.user.tag}` })
-            .setTimestamp(),
-        ],
-        components: [row],
-      });
-    } catch (err) {
-      console.error("Failed to send DM message:", err);
-      await PendingUser.deleteOne({ discordId });
-      return channelError("DMs Disabled", "I couldn't send you a DM. Please enable DMs from server members and try again.");
-    }
-
-    // --- Acknowledge in channel ---
-    await context[replyMethod]({
+    // Send ephemeral verification prompt with button
+    await context.editReply({
       embeds: [
         new EmbedBuilder()
           .setColor("#5865F2")
-          .setTitle("Check Your DMs")
-          .setDescription("I've sent you a DM with your verification code. Please complete verification there."),
+          .setTitle("Verification Email Sent")
+          .setDescription(
+            `A 6-digit verification code has been sent to **${email}**.\n\n` +
+            `**Next Steps:**\n` +
+            `• Check your email inbox (and spam folder)\n` +
+            `• Click the button below to submit your code\n` +
+            `• You have **5 minutes** to verify\n\n` +
+            `The code will expire if not entered in time.`
+          )
+          .setFooter({ text: `Verification for ${context.user.tag}` })
+          .setTimestamp(),
       ],
-      ephemeral: true,
+      components: [row],
     });
 
-    // --- Collect button interaction in DM ---
+    // Set up button interaction handler
     const filter = (i) => i.customId === `verify_code_${discordId}` && i.user.id === discordId;
-    const collector = dmChannel.createMessageComponentCollector({
+    const collector = context.channel.createMessageComponentCollector({
       filter,
       time: CODE_EXPIRY,
       max: 1,
     });
 
     collector.on("collect", async (interaction) => {
-      // Show modal in DM
+      // Create modal for code input
       const modal = new ModalBuilder()
         .setCustomId(`verify_modal_${discordId}`)
         .setTitle("Email Verification");
@@ -246,13 +301,7 @@ module.exports = {
 
       await interaction.showModal(modal);
 
-      // Helper: reply in DM (no flags needed since it's already a DM)
-      const dmError = async (title, description) => {
-        await dmChannel.send({
-          embeds: [new EmbedBuilder().setColor("#ED4245").setTitle(title).setDescription(description)],
-        });
-      };
-
+      // Wait for modal submission
       try {
         const modalSubmit = await interaction.awaitModalSubmit({
           filter: (i) => i.customId === `verify_modal_${discordId}` && i.user.id === discordId,
@@ -272,6 +321,7 @@ module.exports = {
                 .setTitle("Code Expired")
                 .setDescription("Your verification code has expired. Please run `/register` again to get a new code."),
             ],
+            flags: MessageFlags.Ephemeral,
           });
           await PendingUser.deleteOne({ discordId });
           return;
@@ -285,6 +335,7 @@ module.exports = {
                 .setTitle("Incorrect Code")
                 .setDescription("The code you entered is incorrect. Registration canceled.\n\nPlease run `/register` again if you'd like to try again."),
             ],
+            flags: MessageFlags.Ephemeral,
           });
           await PendingUser.deleteOne({ discordId });
           return;
@@ -314,6 +365,7 @@ module.exports = {
                 .setTitle("Account Creation Failed")
                 .setDescription("Failed to create your panel account. Please contact support."),
             ],
+            flags: MessageFlags.Ephemeral,
           });
           return;
         }
@@ -327,16 +379,17 @@ module.exports = {
                 .setTitle("Unexpected Error")
                 .setDescription("Received an invalid response from the panel. Please contact an administrator."),
             ],
+            flags: MessageFlags.Ephemeral,
           });
           return;
         }
 
-        // Save to database
+        // Save user to database
         const pteroId = res.data.attributes.id;
         await new User({ discordId, email, pteroId }).save();
         await PendingUser.deleteOne({ discordId });
 
-        // Send credentials in DM
+        // Send success message (ephemeral)
         await modalSubmit.reply({
           embeds: [
             new EmbedBuilder()
@@ -354,16 +407,23 @@ module.exports = {
               .setFooter({ text: "Keep your credentials secure" })
               .setTimestamp(),
           ],
+          flags: MessageFlags.Ephemeral,
         });
 
-        // Send public completion message in the original channel
-        await context.channel.send({
-          embeds: [
-            new EmbedBuilder()
-              .setColor("#57F287")
-              .setDescription(`<@${discordId}> has registered an account!`),
-          ],
-        });
+        // Send public notification using followUp instead of reply/editReply
+        // This ensures it shows publicly while the rest is ephemeral
+        try {
+          await context.followUp({
+            embeds: [
+              new EmbedBuilder()
+                .setColor("#57F287")
+                .setDescription(`<@${discordId}> has registered an account!`),
+            ],
+          });
+        } catch (err) {
+          console.error("Failed to send public notification:", err);
+          // Public notification failed but account was created, not critical
+        }
 
       } catch (err) {
         console.error("Modal submission error:", err);
@@ -373,19 +433,8 @@ module.exports = {
 
     collector.on("end", async (collected) => {
       if (collected.size === 0) {
+        // Timeout occurred
         await PendingUser.deleteOne({ discordId });
-        try {
-          await dmChannel.send({
-            embeds: [
-              new EmbedBuilder()
-                .setColor("#ED4245")
-                .setTitle("Verification Timed Out")
-                .setDescription("Your verification session has expired. Please run `/register` again to start over."),
-            ],
-          });
-        } catch {
-          // DM may have been closed, ignore
-        }
       }
     });
   },

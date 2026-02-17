@@ -93,7 +93,7 @@ module.exports = {
 
     const cooldownRemaining = checkCooldown(discordId);
     if (cooldownRemaining) {
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#ED4245")
@@ -105,7 +105,7 @@ module.exports = {
     }
 
     if (BANNED_MEMBERS.includes(discordId)) {
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#ED4245")
@@ -117,7 +117,7 @@ module.exports = {
     }
 
     if (!isValidEmail(email)) {
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#ED4245")
@@ -133,7 +133,7 @@ module.exports = {
       if (existing) {
         const userExists = await cleanupStaleUser(discordId, existing.pteroId);
         if (userExists) {
-          return await context.reply({
+          return await context.editReply({
             embeds: [
               new EmbedBuilder()
                 .setColor("#ED4245")
@@ -146,7 +146,7 @@ module.exports = {
       }
     } catch (err) {
       console.error("Error checking existing user:", err);
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#FEE75C")
@@ -159,7 +159,7 @@ module.exports = {
 
     try {
       if (await isEmailRegistered(email)) {
-        return await context.reply({
+        return await context.editReply({
           embeds: [
             new EmbedBuilder()
               .setColor("#ED4245")
@@ -171,7 +171,7 @@ module.exports = {
       }
     } catch (err) {
       console.error("Error checking email:", err);
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#FEE75C")
@@ -190,7 +190,7 @@ module.exports = {
       await new PendingUser({ discordId, email, code, expiresAt }).save();
     } catch (err) {
       console.error("Error saving pending user:", err);
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#FEE75C")
@@ -206,7 +206,7 @@ module.exports = {
     } catch (err) {
       console.error("Email send error:", err);
       await PendingUser.deleteOne({ discordId });
-      return await context.reply({
+      return await context.editReply({
         embeds: [
           new EmbedBuilder()
             .setColor("#ED4245")
@@ -227,8 +227,8 @@ module.exports = {
 
     const row = new ActionRowBuilder().addComponents(verifyButton);
 
-    // FIXED: Actually include the components in the reply
-    await context.reply({
+    // Use editReply instead of reply because interaction is already deferred
+    await context.editReply({
       embeds: [
         new EmbedBuilder()
           .setColor("#5865F2")
@@ -244,16 +244,14 @@ module.exports = {
           .setFooter({ text: `Verification for ${context.user.tag}` })
           .setTimestamp()
       ],
-      components: [row],  // <-- THIS WAS MISSING
-      flags: MessageFlags.Ephemeral
+      components: [row],
     });
 
-    // FIXED: Use client to listen for interaction instead of channel collector
-    // since ephemeral messages can't be collected via channel.createMessageComponentCollector
-    const filter = (i) => i.customId === `verify_code_${discordId}` && i.user.id === discordId;
-    
-    context.channel.awaitMessageComponent({ filter, time: CODE_EXPIRY })
-      .then(async (interaction) => {
+    // Handle button interactions by adding a listener to interactionCreate
+    const handleInteraction = async (i) => {
+      if (i.customId === `verify_code_${discordId}` && i.user.id === discordId) {
+        client.off('interactionCreate', handleInteraction);
+        
         const modal = new ModalBuilder()
           .setCustomId(`verify_modal_${discordId}`)
           .setTitle("Email Verification");
@@ -270,11 +268,11 @@ module.exports = {
         const actionRow = new ActionRowBuilder().addComponents(codeInput);
         modal.addComponents(actionRow);
 
-        await interaction.showModal(modal);
+        await i.showModal(modal);
 
         try {
-          const modalSubmit = await interaction.awaitModalSubmit({
-            filter: (i) => i.customId === `verify_modal_${discordId}` && i.user.id === discordId,
+          const modalSubmit = await i.awaitModalSubmit({
+            filter: (m) => m.customId === `verify_modal_${discordId}` && m.user.id === discordId,
             time: CODE_EXPIRY,
           });
 
@@ -391,10 +389,15 @@ module.exports = {
           console.error("Modal submission error:", err);
           await PendingUser.deleteOne({ discordId });
         }
-      })
-      .catch(() => {
-        // Timeout - clean up
-        PendingUser.deleteOne({ discordId });
-      });
+      }
+    };
+
+    client.on('interactionCreate', handleInteraction);
+
+    // Cleanup listener after timeout
+    setTimeout(() => {
+      client.off('interactionCreate', handleInteraction);
+      PendingUser.deleteOne({ discordId });
+    }, CODE_EXPIRY);
   },
 };

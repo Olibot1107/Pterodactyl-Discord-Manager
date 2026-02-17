@@ -9,7 +9,6 @@ module.exports = async (client, interaction) => {
   if (!client.isReady() || !interaction.guild?.available) return;
 
   if (interaction.isChatInputCommand()) {
- 
     const command = client.commands.get(interaction.commandName);
     if (!command) return;
 
@@ -63,8 +62,7 @@ module.exports = async (client, interaction) => {
 
     try {
       // Create context with properly bound methods and preserved references
-      
-     interaction.createMessage = (opts) => interaction.followUp(opts);
+      interaction.createMessage = (opts) => interaction.followUp(opts);
       await command.run({ client, context: interaction });
     } catch (error) {
       console.error("Command error:", error);
@@ -92,5 +90,9 @@ module.exports = async (client, interaction) => {
         console.error("Failed to send error message:", replyErr);
       }
     }
+  } else if (interaction.isButton() || interaction.isModalSubmit()) {
+    // These interactions will be handled by the command-specific listeners
+    // that are added when the command is run
+    return;
   }
 };

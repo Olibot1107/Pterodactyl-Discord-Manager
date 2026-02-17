@@ -157,7 +157,13 @@ module.exports = {
       const { user, ownedServers } = await getUserAndOwnedServers(lookupDiscordId);
       if (!user) return interaction.respond([]);
 
-      const choices = ownedServers
+      const filteredServers = ownedServers.filter((s) => {
+        if (subcommand === "suspend") return !s.attributes.suspended;
+        if (subcommand === "unsuspend") return !!s.attributes.suspended;
+        return true;
+      });
+
+      const choices = filteredServers
         .map((s) => ({
           name: `${s.attributes.name} (${s.attributes.identifier})${s.attributes.suspended ? " [suspended]" : ""}`,
           value: s.attributes.identifier,

@@ -48,11 +48,22 @@ module.exports = {
         );
       }
 
-      const lines = ownedServers.slice(0, 12).map((server, index) => {
+      const sortedServers = [...ownedServers].sort((a, b) => {
+        const aSuspended = a.attributes.suspended ? 1 : 0;
+        const bSuspended = b.attributes.suspended ? 1 : 0;
+        return bSuspended - aSuspended;
+      });
+
+      const shownServers = sortedServers.slice(0, 25);
+      const lines = shownServers.map((server, index) => {
         const status = server.attributes.suspended ? "Suspended" : "Active";
         return `├─ **${index + 1}.** ${server.attributes.name} (\`${server.attributes.identifier}\`) - ${status}`;
       });
       lines[lines.length - 1] = lines[lines.length - 1].replace("├─", "└─");
+
+      if (ownedServers.length > shownServers.length) {
+        lines.push(`...and **${ownedServers.length - shownServers.length}** more server(s).`);
+      }
 
       return context.createMessage(
         buildServerCard({

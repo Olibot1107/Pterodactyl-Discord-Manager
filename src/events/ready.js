@@ -1,9 +1,5 @@
 const { REST, Routes, ApplicationCommandType } = require("discord.js");
 const api = require("../structures/Ptero");
-const clientApi = require("../structures/ClientPtero");
-const os = require("os");
-const fs = require("fs");
-const path = require("path");
 const { discord } = require("../../settings");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
@@ -11,100 +7,135 @@ const SERVER_ROLE_ID = discord.ServerRoleId;
 const GUILD_ID = discord.guildId;
 const WHITELISTED_UUIDS = []; // Add your whitelisted server UUIDs here
 
-// === HELPERS ===
+const ROLE_SYNC_INTERVAL_MS = 10 * 1000; // 15 minutes
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// === HELPERS ===
 
-// === ROLE ASSIGNMENT & SLOT ANNOUNCEMENT ===
+async function fetchAllPages(endpoint) {
+  const results = [];
+  for (let page = 1; ; page++) {
+    const { data } = await api.get(`${endpoint}?page=${page}&per_page=100`);
+    const items = data.data ?? [];
+    results.push(...items);
+    if (items.length < 100) break; // no more pages
+  }
+  return results;
+}
+
+// === ROLE ASSIGNMENT ===
+
 async function assignRolesAndAnnounce(client) {
-  console.log("Running role assignment and announcement task...");
+  console.log("[RoleSync] Starting role assignment task...");
+
   const guild = client.guilds.cache.get(GUILD_ID);
-  if (!guild) return;
-
-  // 1) Build map of panelUserID → DiscordID
-  const panelUsers = new Map();
-  for (let page = 1;; page++) {
-    const users = (await api.get(`/users?page=${page}&per_page=100`)).data.data;
-    if (!users.length) break;
-    for (const u of users) {
-      const id = u.attributes.username;
-      if (/^\d{17,20}$/.test(id)) panelUsers.set(u.attributes.id, id);
-    }
+  if (!guild) {
+    console.warn("[RoleSync] Guild not found, skipping.");
+    return;
   }
 
-  console.log(`Found ${panelUsers.size} panel users`);
+  // 1) Build map of panelUserID (number) → discordId (string)
+  let panelUsers;
+  let allServers;
+  try {
+    const rawUsers = await fetchAllPages("/users");
+    panelUsers = new Map(
+      rawUsers
+        .filter(u => /^\d{17,20}$/.test(u.attributes.username))
+        .map(u => [u.attributes.id, u.attributes.username])
+    );
 
-  // 2) Count non-whitelisted servers & collect owners
+    allServers = await fetchAllPages("/servers");
+  } catch (err) {
+    console.error("[RoleSync] Failed to fetch panel data:", err.message);
+    return;
+  }
+
+  console.log(`[RoleSync] Found ${panelUsers.size} linked panel users, ${allServers.length} total servers.`);
+
+  // 2) Collect Discord IDs of users who own at least one non-whitelisted server
   const owners = new Set();
-  let totalNonWL = 0;
-  for (let page = 1;; page++) {
-    const servers = (await api.get(`/servers?page=${page}&per_page=100`)).data.data;
-    if (!servers.length) break;
-    for (const sItem of servers) {
-      const s = sItem.attributes;
-      if (!WHITELISTED_UUIDS.includes(s.uuid)) totalNonWL++;
-      const discordId = panelUsers.get(s.user);
-      if (discordId) owners.add(discordId);
-    }
+  for (const { attributes: s } of allServers) {
+    if (WHITELISTED_UUIDS.includes(s.uuid)) continue;
+    const discordId = panelUsers.get(s.user);
+    if (discordId) owners.add(discordId);
   }
 
-  // 3) Sync roles
-  for (const discordId of new Set(panelUsers.values())) {
+  // 3) Sync roles for every linked panel user
+  for (const discordId of panelUsers.values()) {
+    let member;
     try {
-      const member = await guild.members.fetch(discordId);
-      const hasNoServerRole = member.roles.cache.has(NO_SERVER_ROLE_ID);
-      const hasServerRole = member.roles.cache.has(SERVER_ROLE_ID);
-      const ownsServer = owners.has(discordId);
-      console.log(`Syncing ${member.user.tag}: ownsServer=${ownsServer}, hasNoServerRole=${hasNoServerRole}, hasServerRole=${hasServerRole}`);
-      // Sync NO_SERVER_ROLE_ID
-      if (!ownsServer && !hasNoServerRole) {
-        await member.roles.add(NO_SERVER_ROLE_ID);
-        console.log(`→ No Server role added to ${member.user.tag}`);
-        await sleep(2000);
-      }
-      if (ownsServer && hasNoServerRole) {
-        await member.roles.remove(NO_SERVER_ROLE_ID);
-        console.log(`→ No Server role removed from ${member.user.tag}`);
-        await sleep(2000);
+      member = await guild.members.fetch(discordId);
+    } catch {
+      continue; // user not in guild
+    }
+
+    const ownsServer = owners.has(discordId);
+    const hasNoServerRole = member.roles.cache.has(NO_SERVER_ROLE_ID);
+    const hasServerRole = member.roles.cache.has(SERVER_ROLE_ID);
+
+    console.log(
+      `[RoleSync] ${member.user.tag}: ownsServer=${ownsServer}, hasServerRole=${hasServerRole}, hasNoServerRole=${hasNoServerRole}`
+    );
+
+    // Build the desired final role list in one shot to avoid cache desync
+    const alreadyHasCorrectRoles =
+      ownsServer ? (hasServerRole && !hasNoServerRole)
+                 : (!hasServerRole && hasNoServerRole);
+
+    if (alreadyHasCorrectRoles) continue;
+
+    try {
+      // Start from current roles, then swap out only the two managed roles
+      const newRoles = member.roles.cache
+        .filter(r => r.id !== SERVER_ROLE_ID && r.id !== NO_SERVER_ROLE_ID)
+        .map(r => r.id);
+
+      if (ownsServer) {
+        newRoles.push(SERVER_ROLE_ID);
+        console.log(`[RoleSync] → ${member.user.tag}: grant Server, remove No-Server`);
+      } else {
+        newRoles.push(NO_SERVER_ROLE_ID);
+        console.log(`[RoleSync] → ${member.user.tag}: grant No-Server, remove Server`);
       }
 
-      // Sync SERVER_ROLE_ID
-      if (ownsServer && !hasServerRole) {
-        await member.roles.add(SERVER_ROLE_ID);
-        console.log(`→ Server role added to ${member.user.tag}`);
-        await sleep(2000);
-      }
-      if (!ownsServer && hasServerRole) {
-        await member.roles.remove(SERVER_ROLE_ID);
-        console.log(`→ Server role removed from ${member.user.tag}`);
-        await sleep(2000);
-      }
-    } catch {
-      // member might not be in guild
+      await member.roles.set(newRoles);
+      await sleep(2000);
+    } catch (err) {
+      console.warn(`[RoleSync] Failed to update roles for ${member.user.tag}:`, err.message);
     }
   }
+
+  console.log("[RoleSync] Role sync complete.");
 }
 
 // === MODULE INIT ===
+
 module.exports = async (client) => {
   console.log(`Cluster #${client.cluster.id} ready.`);
 
+  // Only run setup tasks on the primary cluster
   if (client.cluster.id !== 0) return;
 
-  // register slash commands
-  const rest = new REST({ version: "10" }).setToken(client.token);
-  const cmds = client.commands
-    .filter(c => c.category !== "Owner")
-    .map(c => ({
-      name: c.name,
-      description: c.description,
-      options: c.options || [],
-      type: ApplicationCommandType.ChatInput,
-      dmPermission: false
-    }));
-  await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
+  // Register slash commands
+  try {
+    const rest = new REST({ version: "10" }).setToken(client.token);
+    const cmds = client.commands
+      .filter(c => c.category !== "Owner")
+      .map(c => ({
+        name: c.name,
+        description: c.description,
+        options: c.options || [],
+        type: ApplicationCommandType.ChatInput,
+        dmPermission: false,
+      }));
+    await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
+    console.log(`[Commands] Registered ${cmds.length} slash commands.`);
+  } catch (err) {
+    console.error("[Commands] Failed to register slash commands:", err.message);
+  }
 
-  // schedule loops (run every 15 minutes)
-  setInterval(() => assignRolesAndAnnounce(client), 10000);
-  assignRolesAndAnnounce(client); // run immediately on startup
+  // Run role sync immediately, then on a fixed interval
+  assignRolesAndAnnounce(client);
+  setInterval(() => assignRolesAndAnnounce(client), ROLE_SYNC_INTERVAL_MS);
 };

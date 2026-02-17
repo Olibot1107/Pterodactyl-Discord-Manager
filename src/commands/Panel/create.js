@@ -1,13 +1,18 @@
 const { EmbedBuilder, ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
 
-const bannedUsers = []; // Add Discord IDs of banned users here, e.g., ["123456789", "987654321"]
-const whitelistedServers = []; // Add UUIDs of whitelisted servers here
+const bannedUsers = []; // Discord IDs of banned users, e.g., ["123456789"]
+const whitelistedServers = []; // UUIDs of whitelisted servers
 
-const tiers = [   
-  { name: "Free", cpu: 50, memory: 514, disk: 4096, max: 1 },
+// --- Role-based server limits ---
+// Roles are checked top-to-bottom; the FIRST match wins.
+// Add your Discord role IDs and how many servers that role allows.
+const roleLimits = [
+  { roleId: "ROLE_ID_HERE", max: 3, label: "VIP" },
+  { roleId: "ROLE_ID_HERE", max: 2, label: "Supporter" },
+  // Users with no matching role fall back to defaultMax below
 ];
-
+const defaultMax = 1; // Default for users with no special role
 
 const eggs = {
   nodejs: {
@@ -23,7 +28,7 @@ const eggs = {
     },
   },
   python: {
-    id: 27,
+    id: 17,
     name: "Python",
     docker_image: "ghcr.io/parkervcp/yolks:python_3.10",
     startup: `if [[ -d .git ]] && [[ "$AUTO_UPDATE" == "1" ]]; then git pull; fi; if [[ ! -z "$PY_PACKAGES" ]]; then pip install -U --prefix .local $PY_PACKAGES; fi; if [[ -f /home/container/$REQUIREMENTS_FILE ]]; then pip install -U --prefix .local -r $REQUIREMENTS_FILE; fi; /usr/local/bin/python /home/container/$PY_FILE`,
@@ -36,6 +41,16 @@ const eggs = {
     },
   },
 };
+
+// Returns the max servers allowed for a given Discord guild member
+function getMaxServersForMember(member) {
+  for (const role of roleLimits) {
+    if (member.roles.cache.has(role.roleId)) {
+      return { max: role.max, label: role.label };
+    }
+  }
+  return { max: defaultMax, label: "Default" };
+}
 
 async function getUserByDiscordId(discordId) {
   let page = 1;
@@ -51,36 +66,11 @@ async function getUserByDiscordId(discordId) {
   return null;
 }
 
-async function getCurrentTierUsage() {
-  const usage = { Premium: 0, Free: 0 };
+// Returns how many non-whitelisted servers a Pterodactyl user owns
+async function getUserServerCount(pteroUserId) {
+  let count = 0;
   let page = 1;
 
-  while (true) {
-    const res = await api.get(`/servers?page=${page}&per_page=100`);
-    const servers = res.data.data || [];
-    if (servers.length === 0) break;
-
-    for (const s of servers) {
-      const uuid = s.attributes.uuid;
-      if (whitelistedServers.includes(uuid)) continue;
-
-      const { cpu, memory, disk } = s.attributes.limits;
-      for (const tier of tiers) {
-        if (cpu === tier.cpu && memory === tier.memory && disk === tier.disk) {
-          usage[tier.name]++;
-          break;
-        }
-      }
-    }
-
-    page++;
-  }
-
-  return usage;
-}
-
-async function userHasServer(userId) {
-  let page = 1;
   while (true) {
     const res = await api.get(`/servers?page=${page}&per_page=100`);
     const servers = res.data.data || [];
@@ -88,18 +78,27 @@ async function userHasServer(userId) {
 
     for (const server of servers) {
       if (
-        server.attributes.user === userId &&
+        server.attributes.user === pteroUserId &&
         !whitelistedServers.includes(server.attributes.uuid)
       ) {
-        return true;
+        count++;
       }
     }
 
     page++;
   }
 
-  return false;
+  return count;
 }
+
+const serverLimits = {
+  memory: 514,
+  swap: 0,
+  disk: 4096,
+  io: 500,
+  cpu: 50,
+  oom_disabled: false,
+};
 
 module.exports = {
   name: "create",
@@ -107,11 +106,12 @@ module.exports = {
   options: [
     {
       name: "egg",
-      description: "Choose server type (Node.js, Python, Java)",
+      description: "Choose server type (Node.js, Python)",
       type: ApplicationCommandOptionType.String,
       required: true,
       choices: [
         { name: "Node.js", value: "nodejs" },
+        { name: "Python", value: "python" },
       ],
     },
     {
@@ -134,30 +134,26 @@ module.exports = {
     const egg = eggs[eggKey];
     if (!egg) return context.createMessage({ content: "❌ Invalid egg selection." });
 
+    // Fetch the guild member so we can check their roles
+    const member = context.member ?? await context.guild?.members.fetch(discordId).catch(() => null);
+    if (!member) {
+      return context.createMessage({ content: "❌ Could not resolve your guild membership." });
+    }
+
+    const { max: serverMax, label: tierLabel } = getMaxServersForMember(member);
+
     const pteroUser = await getUserByDiscordId(discordId);
     if (!pteroUser) {
       return context.createMessage({ content: "❌ No Pterodactyl user linked. Please register first." });
     }
 
-    const alreadyHasServer = await userHasServer(pteroUser.attributes.id);
-    if (alreadyHasServer) {
+    const currentCount = await getUserServerCount(pteroUser.attributes.id);
+    if (currentCount >= serverMax) {
       return context.createMessage({
-        content: "⚠️ You already own a server. You can only have one server per account.",
-      });
-    }
-
-    const tierUsage = await getCurrentTierUsage();
-    let selectedTier = null;
-    for (const tier of tiers) {
-      if (tierUsage[tier.name] < tier.max) {
-        selectedTier = tier;
-        break;
-      }
-    }
-
-    if (!selectedTier) {
-      return context.createMessage({
-        content: "⚠️ All tier slots are currently full. Please try again later.",
+        content:
+          serverMax === 1
+            ? `⚠️ You already own a server. Your plan only allows **1** server per account.`
+            : `⚠️ You have reached your server limit (**${currentCount}/${serverMax}**). Upgrade your role to create more.`,
       });
     }
 
@@ -169,14 +165,7 @@ module.exports = {
         docker_image: egg.docker_image,
         startup: egg.startup,
         environment: egg.environment,
-        limits: {
-          memory: selectedTier.memory,
-          swap: 0,
-          disk: selectedTier.disk,
-          io: 500,
-          cpu: selectedTier.cpu,
-          oom_disabled: false,
-        },
+        limits: serverLimits,
         feature_limits: {
           databases: 0,
           backups: 1,
@@ -196,7 +185,11 @@ module.exports = {
             .setColor("Green")
             .setTitle("✅ Server Created")
             .setDescription(
-              `🖥️ **Name:** \`${serverName}\`\n🍳 **Type:** \`${egg.name}\`\n📦 **Tier:** \`${selectedTier.name}\`\n🔗 [View on Panel](https://panel.leonodes.xyz/server/${res.data.attributes.identifier})`
+              `🖥️ **Name:** \`${serverName}\`\n` +
+              `🍳 **Type:** \`${egg.name}\`\n` +
+              `📊 **Servers:** \`${currentCount + 1}/${serverMax}\`\n` +
+              `🎖️ **Tier:** \`${tierLabel}\`\n` +
+              `🔗 [View on Panel](https://panel.leonodes.xyz/server/${res.data.attributes.identifier})`
             ),
         ],
       });

@@ -91,7 +91,7 @@ async function getUserServerCount(pteroUserId) {
 }
 
 const serverLimits = {
-  memory: 514,
+  memory: 314,
   swap: 0,
   disk: 4096,
   io: 500,
@@ -220,7 +220,7 @@ module.exports = {
           ],
           button: {
             label: "Open Panel",
-            url: `${ptero.url}/server/${res.data.attributes.identifier}`,
+            url: `https://voidium.uk/server/${res.data.attributes.identifier}/`,
           },
           buttonDivider: true,
         })

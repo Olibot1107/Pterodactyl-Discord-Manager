@@ -11,6 +11,3 @@ const manager = new ClusterManager("./src/bot.js", {
 manager.extend(new ReClusterManager());
 manager.on('clusterDestroy', (cluster) => console.log(`Destroyed shard ${cluster.id}`));
 manager.spawn();
-
-// make it so it will start server/index.js
-require('./server/index.js');

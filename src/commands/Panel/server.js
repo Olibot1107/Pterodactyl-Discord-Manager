@@ -96,6 +96,27 @@ async function fetchUnassignedNodeAllocations(nodeId) {
 }
 
 async function requestServerTransfer(serverId, nodeId, allocationId) {
+  const transferPath = `/servers/${serverId}/transfer`;
+  const optionsRes = await api.request({
+    method: "OPTIONS",
+    url: transferPath,
+    validateStatus: () => true,
+  });
+
+  const allowHeader = String(optionsRes.headers?.allow || "");
+  const allowedMethods = allowHeader
+    .split(",")
+    .map((part) => part.trim().toUpperCase())
+    .filter(Boolean);
+
+  if (!allowedMethods.includes("POST") && !allowedMethods.includes("PATCH")) {
+    const unsupported = new Error("Transfer creation is not exposed by this panel API.");
+    unsupported.code = "TRANSFER_UNSUPPORTED";
+    unsupported.allowedMethods = allowedMethods;
+    throw unsupported;
+  }
+
+  const candidateMethods = ["POST", "PATCH"].filter((method) => allowedMethods.includes(method));
   const payloads = [
     { node_id: nodeId, allocation_id: allocationId },
     { node: nodeId, allocation_id: allocationId },
@@ -104,15 +125,21 @@ async function requestServerTransfer(serverId, nodeId, allocationId) {
   ];
 
   let lastError;
-  for (const payload of payloads) {
-    try {
-      await api.post(`/servers/${serverId}/transfer`, payload);
-      return;
-    } catch (err) {
-      lastError = err;
-      const status = err.response?.status;
-      if (status === 404) break;
-      if (status !== 400 && status !== 422) break;
+  for (const method of candidateMethods) {
+    for (const payload of payloads) {
+      try {
+        await api.request({
+          method,
+          url: transferPath,
+          data: payload,
+        });
+        return;
+      } catch (err) {
+        lastError = err;
+        const status = err.response?.status;
+        if (status === 404 || status === 405) break;
+        if (status !== 400 && status !== 422) break;
+      }
     }
   }
 
@@ -339,10 +366,20 @@ module.exports = {
           try {
             await requestServerTransfer(target.attributes.id, targetNodeId, primaryAllocation.id);
           } catch (transferErr) {
+            if (transferErr.code === "TRANSFER_UNSUPPORTED") {
+              const allowed = transferErr.allowedMethods?.join(", ") || "unknown";
+              return context.createMessage(
+                buildServerCard({
+                  title: "✕ Transfer Unsupported",
+                  description: `This panel API cannot start transfers from bots (allowed on transfer route: \`${allowed}\`). Use the panel web UI to transfer this server.`,
+                })
+              );
+            }
+
             const status = transferErr.response?.status;
             const detail = transferErr.response?.data?.errors?.[0]?.detail;
             const message =
-              status === 404
+              status === 404 || status === 405
                 ? "Your panel version does not expose `/api/application/servers/{id}/transfer`."
                 : detail || "Failed to queue the server transfer.";
 

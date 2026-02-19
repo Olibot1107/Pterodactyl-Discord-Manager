@@ -20,6 +20,7 @@ A Discord bot for managing user registration, server creation, and administratio
 - `/server <start|stop|restart|kill|status|suspend|unsuspend>` – Manage server power and suspension.
 - `/timeout <user> <minutes> [reason]` – (Admin) Timeout user and suspend all their servers.
 - `/ban <user> [reason] [prune_hours]` – (Admin) Ban user from the guild.
+- `/stick <add|edit|remove|remove_from_list|list|config|toggle>` – (Admin) Manage multiple sticky messages per channel (use sticky IDs or list index).
 - `/ping` – Check bot latency.
 
 ## Setup

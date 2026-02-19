@@ -29,14 +29,27 @@ module.exports = async (client, oldMember, newMember) => {
 
       // Create thank you embed
       const embed = new EmbedBuilder()
-        .setColor(0xFFD700) // Gold color for boosting
-        .setTitle("🎉 New Server Booster!")
-        .setDescription(`Thank you so much ${newMember.user.tag} for boosting our server!`)
+        .setColor(0xF47FFF)
+        .setAuthor({
+          name: `${newMember.user.username} just boosted the server`,
+          iconURL: newMember.user.displayAvatarURL({ dynamic: true }),
+        })
+        .setTitle("Thanks for the boost")
+        .setDescription(
+          `<@${newMember.user.id}> just boosted **${newMember.guild.name}**.\nWe really appreciate the support.`
+        )
         .addFields(
-          { name: "🌟 What does this mean?", value: "Your support helps us grow and provide better experiences for everyone in our community!" },
-          { name: "🎁 Booster Benefits", value: "Enjoy exclusive perks including special roles, priority support, and more!" }
+          {
+            name: "What your boost does",
+            value: "It helps us keep things running smoothly and improve the server for everyone.",
+          },
+          {
+            name: "Booster perks",
+            value: "You now have the booster role and access to booster-only perks.",
+          }
         )
         .setThumbnail(newMember.user.displayAvatarURL({ dynamic: true }))
+        .setFooter({ text: "You are appreciated." })
         .setTimestamp();
 
       // Send thank you message

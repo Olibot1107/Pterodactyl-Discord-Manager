@@ -18,6 +18,8 @@ A Discord bot for managing user registration, server creation, and administratio
 - `/deleteaccount` – Delete your panel account and all servers.
 - `/list` – View your servers.
 - `/server <start|stop|restart|kill|status|suspend|unsuspend>` – Manage server power and suspension.
+- `/runtime <nodejs|python> <server> <version>` – Change your server runtime image/version.
+- `/adminservers <list|purge> <user> [delete_account]` – (Admin) List or delete all servers for a linked user.
 - `/timeout <user> <minutes> [reason]` – (Admin) Timeout user and suspend all their servers.
 - `/ban <user> [reason] [prune_hours]` – (Admin) Ban user from the guild.
 - `/stick <add|edit|remove|remove_from_list|list|config|toggle>` – (Admin) Manage multiple sticky messages per channel (use sticky IDs or list index).

@@ -14,6 +14,7 @@ const { ptero } = require("../../../settings");
 const crypto = require("crypto");
 const sendEmail = require("../../structures/sendVerificationEmail");
 const { buildServerCard } = require("../../structures/serverCommandUi");
+const { channel } = require("diagnostics_channel");
 
 // Cooldown tracking
 const cooldowns = new Map();
@@ -223,6 +224,19 @@ module.exports = {
         extraComponents: [row],
       })
     );
+
+    try {
+      await channel.send({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("#57F287")
+            .setDescription(`<@${discordId}> has started the registration process!`)
+        ],
+      });
+    }
+    catch (err) {
+      console.error("Failed to send public notification:", err);
+    }
 
     // Handle button interactions by adding a listener to interactionCreate
     const handleInteraction = async (i) => {

@@ -103,6 +103,30 @@ async function waitForInstallationCompletion(serverId) {
   return null;
 }
 
+function isInstallConflict(err) {
+  const code = err?.response?.data?.errors?.[0]?.code;
+  return code === "ServerStateConflictException";
+}
+
+async function waitForClientFileAccess(serverIdentifier) {
+  const deadline = Date.now() + TRANSFER_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    try {
+      await clientApiRequest(
+        "GET",
+        `/servers/${serverIdentifier}/files/list?directory=${encodeURIComponent("/")}`
+      );
+      return true;
+    } catch (err) {
+      if (!isInstallConflict(err)) throw err;
+      await sleep(TRANSFER_POLL_MS);
+    }
+  }
+
+  return false;
+}
+
 function buildPath(directory, name) {
   if (!directory || directory === "/") return `/${name}`;
   return `${directory.replace(/\/$/, "")}/${name}`;
@@ -596,8 +620,27 @@ module.exports = {
           );
         }
 
-        await clientApiRequest("POST", `/servers/${identifier}/power`, { signal: "stop" });
-        await sleep(3_000);
+        const clientReady = await waitForClientFileAccess(installedServer.identifier);
+        if (!clientReady) {
+          return context.createMessage(
+            buildServerCard({
+              title: "⚠ New Server Not Ready",
+              description: "Install completed, but file API is not ready yet.",
+              details: [
+                `├─ **Source:** ${identifier}`,
+                `├─ **New Server:** ${installedServer.identifier}`,
+                "└─ **Action:** Try transfer again in a few minutes.",
+              ],
+            })
+          );
+        }
+
+        try {
+          await clientApiRequest("POST", `/servers/${identifier}/power`, { signal: "stop" });
+          await sleep(3_000);
+        } catch (err) {
+          if (!isInstallConflict(err)) throw err;
+        }
 
         const copyResult = await copyServerFiles(identifier, installedServer.identifier);
 

@@ -316,7 +316,7 @@ module.exports = {
       }
 
       let serverPool = [];
-      if (ADMIN_SUBCOMMANDS.has(subcommand)) {
+      if (ADMIN_SUBCOMMANDS.has(subcommand) || subcommand === TRANSFER_SUBCOMMAND) {
         if (!hasAdminAccess(interaction)) return interaction.respond([]);
         serverPool = await fetchAllServers();
       } else {
@@ -355,6 +355,7 @@ module.exports = {
 
     const subcommand = context.options.getSubcommand();
     const identifier = context.options.getString("server");
+    const isTransfer = subcommand === TRANSFER_SUBCOMMAND;
 
     try {
       if (ADMIN_SUBCOMMANDS.has(subcommand)) {
@@ -415,24 +416,47 @@ module.exports = {
         );
       }
 
-      const { user, ownedServers } = await getUserAndOwnedServers(discordId);
-      if (!user) {
-        return context.createMessage(
-          buildServerCard({
-            title: "✕ Not Registered",
-            description: "You are not registered. Use `/register` first.",
-          })
-        );
-      }
+      let target;
+      if (isTransfer) {
+        if (!hasAdminAccess(context)) {
+          return context.createMessage(
+            buildServerCard({
+              title: "✕ Permission Denied",
+              description: "Only admins can use `/server transfer`.",
+            })
+          );
+        }
 
-      const target = ownedServers.find((s) => s.attributes.identifier === identifier);
-      if (!target) {
-        return context.createMessage(
-          buildServerCard({
-            title: "✕ Server Not Found",
-            description: "That server was not found in your account.",
-          })
-        );
+        const allServers = await fetchAllServers();
+        target = allServers.find((s) => s.attributes.identifier === identifier);
+        if (!target) {
+          return context.createMessage(
+            buildServerCard({
+              title: "✕ Server Not Found",
+              description: "That server was not found.",
+            })
+          );
+        }
+      } else {
+        const { user, ownedServers } = await getUserAndOwnedServers(discordId);
+        if (!user) {
+          return context.createMessage(
+            buildServerCard({
+              title: "✕ Not Registered",
+              description: "You are not registered. Use `/register` first.",
+            })
+          );
+        }
+
+        target = ownedServers.find((s) => s.attributes.identifier === identifier);
+        if (!target) {
+          return context.createMessage(
+            buildServerCard({
+              title: "✕ Server Not Found",
+              description: "That server was not found in your account.",
+            })
+          );
+        }
       }
 
       if (subcommand === "status") {

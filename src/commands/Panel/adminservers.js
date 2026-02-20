@@ -40,6 +40,26 @@ module.exports = {
       ],
     },
     {
+      name: "delete",
+      description: "Delete one panel server owned by a Discord user",
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        {
+          name: "user",
+          description: "Target Discord user",
+          type: ApplicationCommandOptionType.User,
+          required: true,
+        },
+        {
+          name: "server",
+          description: "Server identifier to delete",
+          type: ApplicationCommandOptionType.String,
+          autocomplete: true,
+          required: true,
+        },
+      ],
+    },
+    {
       name: "purge",
       description: "Delete all panel servers owned by a Discord user",
       type: ApplicationCommandOptionType.Subcommand,
@@ -60,6 +80,49 @@ module.exports = {
     },
   ],
 
+  autocomplete: async ({ interaction }) => {
+    const subcommand = interaction.options.getSubcommand();
+    const focusedOption = interaction.options.getFocused(true);
+    const focused = interaction.options.getFocused().toLowerCase();
+    const isAdmin =
+      interaction.user.id === adminid ||
+      interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+
+    if (!isAdmin || subcommand !== "delete" || focusedOption.name !== "server") {
+      return interaction.respond([]);
+    }
+
+    try {
+      const targetUser = interaction.options.getUser("user");
+      if (!targetUser) return interaction.respond([]);
+
+      const linked = await User.findOne({ discordId: targetUser.id });
+      if (!linked) return interaction.respond([]);
+
+      const allServers = await fetchAllServers();
+      const ownedServers = allServers.filter(
+        (server) => server.attributes.user === linked.pteroId
+      );
+
+      const choices = ownedServers
+        .map((server) => ({
+          name: `${server.attributes.name} (${server.attributes.identifier})`,
+          value: server.attributes.identifier,
+        }))
+        .filter(
+          (choice) =>
+            choice.name.toLowerCase().includes(focused) ||
+            choice.value.toLowerCase().includes(focused)
+        )
+        .slice(0, 25);
+
+      return interaction.respond(choices);
+    } catch (err) {
+      console.error("Adminservers autocomplete error:", err.response?.data || err);
+      return interaction.respond([]);
+    }
+  },
+
   run: async ({ context }) => {
     if (!hasAdminAccess(context)) {
       return context.createMessage(
@@ -73,6 +136,7 @@ module.exports = {
 
     const subcommand = context.options.getSubcommand();
     const targetUser = context.options.getUser("user");
+    const singleServerIdentifier = context.options.getString("server");
     const deleteAccount = context.options.getBoolean("delete_account") || false;
 
     if (!targetUser) {
@@ -134,6 +198,37 @@ module.exports = {
             title: "✔ User Server List",
             description: `Found **${ownedServers.length}** server(s) for <@${targetUser.id}>.`,
             details: lines,
+            ephemeral: true,
+          })
+        );
+      }
+
+      if (subcommand === "delete") {
+        const targetServer = ownedServers.find(
+          (server) => server.attributes.identifier === singleServerIdentifier
+        );
+
+        if (!targetServer) {
+          return context.createMessage(
+            buildServerCard({
+              title: "✕ Server Not Found",
+              description: "That server was not found for the selected user.",
+              ephemeral: true,
+            })
+          );
+        }
+
+        await api.delete(`/servers/${targetServer.attributes.id}`);
+
+        return context.createMessage(
+          buildServerCard({
+            title: "✔ Server Deleted",
+            description: `Deleted **${targetServer.attributes.name}** for <@${targetUser.id}>.`,
+            details: [
+              `├─ **Identifier:** ${targetServer.attributes.identifier}`,
+              `├─ **Panel User ID:** ${linked.pteroId}`,
+              `└─ **Action By:** ${context.user.username}`,
+            ],
             ephemeral: true,
           })
         );

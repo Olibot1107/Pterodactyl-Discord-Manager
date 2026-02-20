@@ -240,7 +240,7 @@ function buildBoardMessage(container) {
   };
 }
 
-function buildStatusMessages(serverStatuses, totalServers, failedServers) {
+function buildStatusMessages(serverStatuses, totalServers, failedServers, allNodeNames = []) {
   const nowUnix = Math.floor(Date.now() / 1000);
   const statusRank = { online: 0, idle: 1, offline: 2 };
   const sorted = [...serverStatuses].sort((a, b) => {
@@ -257,6 +257,9 @@ function buildStatusMessages(serverStatuses, totalServers, failedServers) {
   }
 
   const byNode = new Map();
+  for (const nodeName of allNodeNames) {
+    if (!byNode.has(nodeName)) byNode.set(nodeName, []);
+  }
   for (const server of sorted) {
     if (!byNode.has(server.nodeName)) byNode.set(server.nodeName, []);
     byNode.get(server.nodeName).push(server);
@@ -300,6 +303,23 @@ function buildStatusMessages(serverStatuses, totalServers, failedServers) {
     const nodeCounts = { online: 0, idle: 0, offline: 0 };
     for (const server of nodeServers) {
       nodeCounts[server.stateMeta.bucket] += 1;
+    }
+
+    if (nodeServers.length === 0) {
+      const emptyContainer = new ContainerBuilder().setAccentColor(0x2b8a3e);
+      emptyContainer.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(
+          [
+            `## Node: ${nodeName}`,
+            `${STATUS_EMOJIS.online} 0  ${STATUS_EMOJIS.idle} 0  ${STATUS_EMOJIS.offline} 0`,
+            "No active servers on this node.",
+            `Updated: <t:${nowUnix}:R>`,
+            `*${STATUS_BOARD_FOOTER_MARKER}*`,
+          ].join("\n")
+        )
+      );
+      messages.push(buildBoardMessage(emptyContainer));
+      continue;
     }
 
     const lines = nodeServers.map((server) =>
@@ -408,7 +428,12 @@ async function updateServerStatusBoard(client) {
       }
     });
 
-    const nextMessages = buildStatusMessages(serverStatuses, allServers.length, failedServers);
+    const nextMessages = buildStatusMessages(
+      serverStatuses,
+      allServers.length,
+      failedServers,
+      [...nodeMap.values()].sort((a, b) => a.localeCompare(b))
+    );
     let boardMessages = [];
 
     if (statusBoardMessageIds.length > 0) {

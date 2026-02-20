@@ -10,7 +10,7 @@ const {
 const { ptero, adminid } = require("../../../settings");
 
 const POWER_SUBCOMMANDS = ["start", "stop", "restart", "kill"];
-const ADMIN_SUBCOMMANDS = new Set(["suspend", "unsuspend", "transfer"]);
+const ADMIN_SUBCOMMANDS = new Set(["suspend", "unsuspend"]);
 const ACTION_LABELS = {
   start: "Started",
   stop: "Stopped",
@@ -67,83 +67,6 @@ async function fetchAllServers() {
     if (servers.length < 100) break;
   }
   return allServers;
-}
-
-async function fetchAllNodes() {
-  const allNodes = [];
-  for (let page = 1; ; page++) {
-    const res = await api.get(`/nodes?page=${page}&per_page=100`);
-    const nodes = res.data.data || [];
-    allNodes.push(...nodes);
-    if (nodes.length < 100) break;
-  }
-  return allNodes;
-}
-
-async function fetchUnassignedNodeAllocations(nodeId) {
-  const allocations = [];
-  for (let page = 1; ; page++) {
-    const res = await api.get(`/nodes/${nodeId}/allocations?page=${page}&per_page=100`);
-    const pageItems = res.data.data || [];
-    for (const allocation of pageItems) {
-      const attrs = allocation?.attributes || {};
-      const isAssigned = !!attrs.assigned || attrs.server_id != null || attrs.server != null;
-      if (!isAssigned) allocations.push(attrs);
-    }
-    if (pageItems.length < 100) break;
-  }
-  return allocations;
-}
-
-async function requestServerTransfer(serverId, nodeId, allocationId) {
-  const transferPath = `/servers/${serverId}/transfer`;
-  const optionsRes = await api.request({
-    method: "OPTIONS",
-    url: transferPath,
-    validateStatus: () => true,
-  });
-
-  const allowHeader = String(optionsRes.headers?.allow || "");
-  const allowedMethods = allowHeader
-    .split(",")
-    .map((part) => part.trim().toUpperCase())
-    .filter(Boolean);
-
-  if (!allowedMethods.includes("POST") && !allowedMethods.includes("PATCH")) {
-    const unsupported = new Error("Transfer creation is not exposed by this panel API.");
-    unsupported.code = "TRANSFER_UNSUPPORTED";
-    unsupported.allowedMethods = allowedMethods;
-    throw unsupported;
-  }
-
-  const candidateMethods = ["POST", "PATCH"].filter((method) => allowedMethods.includes(method));
-  const payloads = [
-    { node_id: nodeId, allocation_id: allocationId },
-    { node: nodeId, allocation_id: allocationId },
-    { node_id: nodeId, allocation: allocationId },
-    { node: nodeId, allocation: allocationId },
-  ];
-
-  let lastError;
-  for (const method of candidateMethods) {
-    for (const payload of payloads) {
-      try {
-        await api.request({
-          method,
-          url: transferPath,
-          data: payload,
-        });
-        return;
-      } catch (err) {
-        lastError = err;
-        const status = err.response?.status;
-        if (status === 404 || status === 405) break;
-        if (status !== 400 && status !== 422) break;
-      }
-    }
-  }
-
-  throw lastError;
 }
 
 function hasAdminAccess(actor) {
@@ -208,28 +131,6 @@ function buildCommandOptions() {
     ],
   });
 
-  baseSubcommands.push({
-    name: "transfer",
-    description: "Transfer any server to a different node",
-    type: ApplicationCommandOptionType.Subcommand,
-    options: [
-      {
-        name: "server",
-        description: "Choose any server",
-        type: ApplicationCommandOptionType.String,
-        required: true,
-        autocomplete: true,
-      },
-      {
-        name: "node",
-        description: "Destination node",
-        type: ApplicationCommandOptionType.Integer,
-        required: true,
-        autocomplete: true,
-      },
-    ],
-  });
-
   return baseSubcommands;
 }
 
@@ -241,30 +142,9 @@ module.exports = {
   autocomplete: async ({ interaction }) => {
     const discordId = interaction.user.id;
     const subcommand = interaction.options.getSubcommand();
-    const focusedOption = interaction.options.getFocused(true);
-    const focused = String(focusedOption.value ?? "").toLowerCase();
+    const focused = interaction.options.getFocused().toLowerCase();
 
     try {
-      if (subcommand === "transfer" && focusedOption.name === "node") {
-        if (!hasAdminAccess(interaction)) return interaction.respond([]);
-
-        const nodes = await fetchAllNodes();
-        const choices = nodes
-          .map((entry) => entry?.attributes)
-          .filter(Boolean)
-          .map((node) => ({
-            name: `${node.name || `Node ${node.id}`} (${node.id})`,
-            value: node.id,
-          }))
-          .filter((node) => {
-            const idText = String(node.value);
-            return node.name.toLowerCase().includes(focused) || idText.includes(focused);
-          })
-          .slice(0, 25);
-
-        return interaction.respond(choices);
-      }
-
       let serverPool = [];
       if (ADMIN_SUBCOMMANDS.has(subcommand)) {
         if (!hasAdminAccess(interaction)) return interaction.respond([]);
@@ -305,7 +185,6 @@ module.exports = {
 
     const subcommand = context.options.getSubcommand();
     const identifier = context.options.getString("server");
-    const targetNodeId = subcommand === "transfer" ? context.options.getInteger("node") : null;
 
     try {
       if (ADMIN_SUBCOMMANDS.has(subcommand)) {
@@ -313,7 +192,7 @@ module.exports = {
           return context.createMessage(
             buildServerCard({
               title: "✕ Permission Denied",
-              description: "Only admins can use `/server suspend`, `/server unsuspend`, and `/server transfer`.",
+              description: "Only admins can use `/server suspend` and `/server unsuspend`.",
             })
           );
         }
@@ -325,84 +204,6 @@ module.exports = {
             buildServerCard({
               title: "✕ Server Not Found",
               description: "That server was not found.",
-            })
-          );
-        }
-
-        if (subcommand === "transfer") {
-          const allNodes = await fetchAllNodes();
-          const sourceNode = allNodes.find((n) => n.attributes.id === target.attributes.node);
-          const destinationNode = allNodes.find((n) => n.attributes.id === targetNodeId);
-
-          if (!destinationNode) {
-            return context.createMessage(
-              buildServerCard({
-                title: "✕ Node Not Found",
-                description: `Node \`${targetNodeId}\` was not found.`,
-              })
-            );
-          }
-
-          if (target.attributes.node === targetNodeId) {
-            return context.createMessage(
-              buildServerCard({
-                title: "✕ Same Node",
-                description: `**${target.attributes.name}** is already on **${destinationNode.attributes.name}**.`,
-              })
-            );
-          }
-
-          const availableAllocations = await fetchUnassignedNodeAllocations(targetNodeId);
-          const primaryAllocation = availableAllocations[0];
-          if (!primaryAllocation) {
-            return context.createMessage(
-              buildServerCard({
-                title: "✕ No Free Allocation",
-                description: `No unassigned allocation exists on **${destinationNode.attributes.name}**.`,
-              })
-            );
-          }
-
-          try {
-            await requestServerTransfer(target.attributes.id, targetNodeId, primaryAllocation.id);
-          } catch (transferErr) {
-            if (transferErr.code === "TRANSFER_UNSUPPORTED") {
-              const allowed = transferErr.allowedMethods?.join(", ") || "unknown";
-              return context.createMessage(
-                buildServerCard({
-                  title: "✕ Transfer Unsupported",
-                  description: `This panel API cannot start transfers from bots (allowed on transfer route: \`${allowed}\`). Use the panel web UI to transfer this server.`,
-                })
-              );
-            }
-
-            const status = transferErr.response?.status;
-            const detail = transferErr.response?.data?.errors?.[0]?.detail;
-            const message =
-              status === 404 || status === 405
-                ? "Your panel version does not expose `/api/application/servers/{id}/transfer`."
-                : detail || "Failed to queue the server transfer.";
-
-            return context.createMessage(
-              buildServerCard({
-                title: "✕ Transfer Failed",
-                description: message,
-              })
-            );
-          }
-
-          return context.createMessage(
-            buildServerCard({
-              title: "✔ Transfer Queued",
-              description: `Transfer started for **${target.attributes.name}**.`,
-              details: [
-                `├─ **Server:** ${target.attributes.name}`,
-                `├─ **Identifier:** ${identifier}`,
-                `├─ **From:** ${sourceNode?.attributes?.name || `Node ${target.attributes.node}`}`,
-                `├─ **To:** ${destinationNode.attributes.name}`,
-                `├─ **Allocation:** ${primaryAllocation.ip}:${primaryAllocation.port} (#${primaryAllocation.id})`,
-                `└─ **Requested By:** ${context.user.username}`,
-              ],
             })
           );
         }

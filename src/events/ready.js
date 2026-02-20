@@ -141,6 +141,30 @@ function truncate(text, maxLength) {
   return `${text.slice(0, maxLength - 3)}...`;
 }
 
+function sanitizeInlineText(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .replace(/[`|]/g, "")
+    .trim();
+}
+
+function formatStatusLine(server) {
+  const base =
+    `${server.stateMeta.emoji} **${truncate(sanitizeInlineText(server.name), 34)}** ` +
+    `(\`${sanitizeInlineText(server.identifier)}\`) \`${server.stateMeta.label}\``;
+
+  if (server.stateMeta.bucket === "offline") {
+    return `${base} | Up: ${formatUptime(server.uptime)}`;
+  }
+
+  return (
+    `${base} | ${STATUS_EMOJIS.cpu} CPU ${formatPercent(server.cpu)}%` +
+    ` | ${STATUS_EMOJIS.ram} RAM ${formatBytesToMB(server.memory)}` +
+    ` | ${STATUS_EMOJIS.ssd} Disk ${formatBytesToMB(server.disk)}` +
+    ` | Up: ${formatUptime(server.uptime)}`
+  );
+}
+
 async function loadStatusBoardMessageIds() {
   try {
     const raw = await fs.readFile(STATUS_BOARD_STATE_FILE, "utf8");
@@ -322,12 +346,32 @@ function buildStatusMessages(serverStatuses, totalServers, failedServers, allNod
       continue;
     }
 
-    const lines = nodeServers.map((server) =>
-      `${server.stateMeta.emoji} **${truncate(server.name, 40)}** (\`${server.identifier}\`) ` +
-      `\`${server.stateMeta.label}\` | ${STATUS_EMOJIS.cpu} ${formatPercent(server.cpu)}% | ` +
-      `${STATUS_EMOJIS.ram} ${formatBytesToMB(server.memory)} | ` +
-      `${STATUS_EMOJIS.ssd} ${formatBytesToMB(server.disk)} | Uptime: ${formatUptime(server.uptime)}`
-    );
+    const onlineLines = [];
+    const idleLines = [];
+    const offlineLines = [];
+
+    for (const server of nodeServers) {
+      const line = formatStatusLine(server);
+      if (server.stateMeta.bucket === "online") onlineLines.push(line);
+      else if (server.stateMeta.bucket === "idle") idleLines.push(line);
+      else offlineLines.push(line);
+    }
+
+    const lines = [];
+    if (onlineLines.length > 0) {
+      lines.push(`### ${STATUS_EMOJIS.online} Running (${onlineLines.length})`);
+      lines.push(...onlineLines);
+    }
+    if (idleLines.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push(`### ${STATUS_EMOJIS.idle} Idle (${idleLines.length})`);
+      lines.push(...idleLines);
+    }
+    if (offlineLines.length > 0) {
+      if (lines.length > 0) lines.push("");
+      lines.push(`### ${STATUS_EMOJIS.offline} Offline (${offlineLines.length})`);
+      lines.push(...offlineLines);
+    }
 
     const linePages = chunk(lines, 16);
     linePages.forEach((pageLines, pageIndex) => {

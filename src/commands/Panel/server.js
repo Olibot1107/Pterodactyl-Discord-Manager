@@ -128,6 +128,20 @@ function parseStartupVariables(startupResponse) {
   return environment;
 }
 
+async function fetchServerEnvironment(serverId, sourceServer) {
+  try {
+    const res = await api.get(`/servers/${serverId}?include=variables`);
+    const environment = parseStartupVariables(res);
+    if (Object.keys(environment).length > 0) return environment;
+  } catch (err) {
+    console.warn("Failed to fetch server variables via include=variables:", err.response?.data || err.message || err);
+  }
+
+  const containerEnv = sourceServer?.container?.environment;
+  if (containerEnv && typeof containerEnv === "object") return containerEnv;
+  return {};
+}
+
 async function copyServerFiles(sourceIdentifier, destinationIdentifier) {
   const queue = ["/"];
   const files = [];
@@ -536,8 +550,7 @@ module.exports = {
           );
         }
 
-        const startupRes = await api.get(`/servers/${target.attributes.id}/startup`);
-        const environment = parseStartupVariables(startupRes);
+        const environment = await fetchServerEnvironment(target.attributes.id, sourceServer);
 
         const createPayload = {
           name: sourceServer.name,

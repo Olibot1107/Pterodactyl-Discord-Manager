@@ -5,6 +5,11 @@
   "description": "A Discord bot for Pterodactyl panel that allows users to register via email OTP and create servers using commands.",
   "author": "Itz Random",
   "license": "ISC",
+  "scripts": {
+    "start": "node index.js",
+    "start:bot": "node index.js",
+    "start:web": "node web/server.js"
+  },
   "dependencies": {
     "@discordjs/voice": "^0.18.0",
     "axios": "^1.9.0",

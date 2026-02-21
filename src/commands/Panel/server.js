@@ -11,11 +11,6 @@ const { ptero, adminid } = require("../../../settings");
 
 const POWER_SUBCOMMANDS = ["start", "stop", "restart", "kill"];
 const ADMIN_SUBCOMMANDS = new Set(["suspend", "unsuspend"]);
-const TRANSFER_SUBCOMMAND = "transfer";
-const TRANSFER_TIMEOUT_MS = 20 * 60 * 1000;
-const TRANSFER_POLL_MS = 5_000;
-const FILE_COPY_POLL_MS = 1_000;
-const MAX_COPY_FILES = 2_000;
 const ACTION_LABELS = {
   start: "Started",
   stop: "Stopped",
@@ -74,173 +69,6 @@ async function fetchAllServers() {
   return allServers;
 }
 
-async function fetchAllNodes() {
-  const allNodes = [];
-  for (let page = 1; ; page++) {
-    const res = await api.get(`/nodes?page=${page}&per_page=100`);
-    const nodes = res.data.data || [];
-    allNodes.push(...nodes);
-    if (nodes.length < 100) break;
-  }
-  return allNodes;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForInstallationCompletion(serverId) {
-  const deadline = Date.now() + TRANSFER_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    const res = await api.get(`/servers/${serverId}`);
-    const server = res.data?.attributes;
-    if (!server) break;
-    if (!server.is_installing) return server;
-    await sleep(TRANSFER_POLL_MS);
-  }
-
-  return null;
-}
-
-function isInstallConflict(err) {
-  const code = err?.response?.data?.errors?.[0]?.code;
-  return code === "ServerStateConflictException";
-}
-
-async function waitForClientFileAccess(serverIdentifier) {
-  const deadline = Date.now() + TRANSFER_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
-    try {
-      await clientApiRequest(
-        "GET",
-        `/servers/${serverIdentifier}/files/list?directory=${encodeURIComponent("/")}`
-      );
-      return true;
-    } catch (err) {
-      if (!isInstallConflict(err)) throw err;
-      await sleep(TRANSFER_POLL_MS);
-    }
-  }
-
-  return false;
-}
-
-function buildPath(directory, name) {
-  if (!directory || directory === "/") return `/${name}`;
-  return `${directory.replace(/\/$/, "")}/${name}`;
-}
-
-function parseStartupVariables(startupResponse) {
-  const data = startupResponse?.data || {};
-  const vars =
-    data?.attributes?.relationships?.variables?.data ||
-    data?.meta?.startup_variables ||
-    data?.data ||
-    [];
-
-  const environment = {};
-  for (const row of vars) {
-    const attrs = row?.attributes || row || {};
-    const key = attrs.env_variable;
-    if (!key) continue;
-    const value = attrs.server_value ?? attrs.default_value ?? "";
-    environment[key] = String(value);
-  }
-
-  return environment;
-}
-
-async function fetchServerEnvironment(serverId, sourceServer) {
-  try {
-    const res = await api.get(`/servers/${serverId}?include=variables`);
-    const environment = parseStartupVariables(res);
-    if (Object.keys(environment).length > 0) return environment;
-  } catch (err) {
-    console.warn("Failed to fetch server variables via include=variables:", err.response?.data || err.message || err);
-  }
-
-  const containerEnv = sourceServer?.container?.environment;
-  if (containerEnv && typeof containerEnv === "object") return containerEnv;
-  return {};
-}
-
-async function copyServerFiles(sourceIdentifier, destinationIdentifier) {
-  const queue = ["/"];
-  const files = [];
-  const folders = ["/"];
-
-  while (queue.length) {
-    const directory = queue.shift();
-    const res = await clientApiRequest(
-      "GET",
-      `/servers/${sourceIdentifier}/files/list?directory=${encodeURIComponent(directory)}`
-    );
-    const entries = res.data?.data || [];
-
-    for (const entry of entries) {
-      const attrs = entry?.attributes || {};
-      const name = attrs.name;
-      if (!name) continue;
-      if (attrs.is_symlink) continue;
-
-      const fullPath = buildPath(directory, name);
-      const isFile = !!attrs.is_file;
-
-      if (isFile) {
-        files.push(fullPath);
-      } else {
-        folders.push(fullPath);
-        queue.push(fullPath);
-      }
-    }
-  }
-
-  if (files.length > MAX_COPY_FILES) {
-    throw new Error(`Too many files to copy (${files.length}).`);
-  }
-
-  for (const folder of folders.slice(1)) {
-    const normalized = folder.replace(/^\/+/, "");
-    const parts = normalized.split("/");
-    const name = parts.pop();
-    const root = parts.length ? `/${parts.join("/")}` : "/";
-
-    await clientApiRequest("POST", `/servers/${destinationIdentifier}/files/create-folder`, {
-      root,
-      name,
-    });
-  }
-
-  for (const path of files) {
-    const encodedPath = encodeURIComponent(path);
-    const download = await clientApiRequest(
-      "GET",
-      `/servers/${sourceIdentifier}/files/download?file=${encodedPath}`
-    );
-    const url = download.data?.attributes?.url;
-    if (!url) throw new Error(`Missing download URL for ${path}`);
-
-    const normalized = path.replace(/^\/+/, "");
-    const parts = normalized.split("/");
-    const filename = parts.pop();
-    const directory = parts.length ? `/${parts.join("/")}` : "/";
-
-    await clientApiRequest("POST", `/servers/${destinationIdentifier}/files/pull`, {
-      url,
-      directory,
-      filename,
-      use_header: false,
-      foreground: true,
-    });
-
-    await sleep(FILE_COPY_POLL_MS);
-  }
-
-  return { files: files.length, folders: folders.length - 1 };
-}
-
 function hasAdminAccess(actor) {
   return (
     actor.user.id === adminid ||
@@ -272,28 +100,6 @@ function buildCommandOptions() {
       },
     ],
   }));
-
-  baseSubcommands.push({
-    name: TRANSFER_SUBCOMMAND,
-    description: "Move one of your servers to another node",
-    type: ApplicationCommandOptionType.Subcommand,
-    options: [
-      {
-        name: "server",
-        description: "Choose one of your servers",
-        type: ApplicationCommandOptionType.String,
-        required: true,
-        autocomplete: true,
-      },
-      {
-        name: "node",
-        description: "Target node ID",
-        type: ApplicationCommandOptionType.Integer,
-        required: true,
-        autocomplete: true,
-      },
-    ],
-  });
 
   baseSubcommands.push({
     name: "suspend",
@@ -340,21 +146,8 @@ module.exports = {
     const focused = String(focusedOption.value || "").toLowerCase();
 
     try {
-      if (subcommand === TRANSFER_SUBCOMMAND && focusedOption.name === "node") {
-        const nodes = await fetchAllNodes();
-        const nodeChoices = nodes
-          .map((node) => ({
-            name: `${node.attributes.name} (#${node.attributes.id})`,
-            value: node.attributes.id,
-          }))
-          .filter((node) => node.name.toLowerCase().includes(focused))
-          .slice(0, 25);
-
-        return interaction.respond(nodeChoices);
-      }
-
       let serverPool = [];
-      if (ADMIN_SUBCOMMANDS.has(subcommand) || subcommand === TRANSFER_SUBCOMMAND) {
+      if (ADMIN_SUBCOMMANDS.has(subcommand)) {
         if (!hasAdminAccess(interaction)) return interaction.respond([]);
         serverPool = await fetchAllServers();
       } else {
@@ -393,7 +186,6 @@ module.exports = {
 
     const subcommand = context.options.getSubcommand();
     const identifier = context.options.getString("server");
-    const isTransfer = subcommand === TRANSFER_SUBCOMMAND;
 
     try {
       if (ADMIN_SUBCOMMANDS.has(subcommand)) {
@@ -454,47 +246,24 @@ module.exports = {
         );
       }
 
-      let target;
-      if (isTransfer) {
-        if (!hasAdminAccess(context)) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Permission Denied",
-              description: "Only admins can use `/server transfer`.",
-            })
-          );
-        }
+      const { user, ownedServers } = await getUserAndOwnedServers(discordId);
+      if (!user) {
+        return context.createMessage(
+          buildServerCard({
+            title: "✕ Not Registered",
+            description: "You are not registered. Use `/register` first.",
+          })
+        );
+      }
 
-        const allServers = await fetchAllServers();
-        target = allServers.find((s) => s.attributes.identifier === identifier);
-        if (!target) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Server Not Found",
-              description: "That server was not found.",
-            })
-          );
-        }
-      } else {
-        const { user, ownedServers } = await getUserAndOwnedServers(discordId);
-        if (!user) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Not Registered",
-              description: "You are not registered. Use `/register` first.",
-            })
-          );
-        }
-
-        target = ownedServers.find((s) => s.attributes.identifier === identifier);
-        if (!target) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Server Not Found",
-              description: "That server was not found in your account.",
-            })
-          );
-        }
+      const target = ownedServers.find((s) => s.attributes.identifier === identifier);
+      if (!target) {
+        return context.createMessage(
+          buildServerCard({
+            title: "✕ Server Not Found",
+            description: "That server was not found in your account.",
+          })
+        );
       }
 
       if (subcommand === "status") {
@@ -535,127 +304,6 @@ module.exports = {
               `├─ **Server:** ${target.attributes.name}`,
               `├─ **Identifier:** ${identifier}`,
               `└─ **Requested By:** ${context.user.username}`,
-            ],
-          })
-        );
-      }
-
-      if (subcommand === TRANSFER_SUBCOMMAND) {
-        const targetNodeId = context.options.getInteger("node");
-        const allNodes = await fetchAllNodes();
-        const destinationNode = allNodes.find((n) => n.attributes.id === targetNodeId);
-
-        if (!destinationNode) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Invalid Node",
-              description: `Node ID **${targetNodeId}** was not found.`,
-            })
-          );
-        }
-
-        if (Number(target.attributes.node) === Number(targetNodeId)) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Same Node",
-              description: `**${target.attributes.name}** is already on node **${targetNodeId}**.`,
-            })
-          );
-        }
-
-        const sourceServerRes = await api.get(`/servers/${target.attributes.id}`);
-        const sourceServer = sourceServerRes.data?.attributes;
-        if (!sourceServer) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Server Data Missing",
-              description: "Could not load full source server data.",
-            })
-          );
-        }
-
-        const environment = await fetchServerEnvironment(target.attributes.id, sourceServer);
-
-        const createPayload = {
-          name: sourceServer.name,
-          user: sourceServer.user,
-          egg: sourceServer.egg,
-          docker_image: sourceServer.container?.image,
-          startup: sourceServer.container?.startup_command || sourceServer.startup,
-          environment,
-          limits: sourceServer.limits,
-          feature_limits: sourceServer.feature_limits,
-          deploy: {
-            locations: [destinationNode.attributes.location_id],
-            dedicated_ip: false,
-            port_range: [],
-          },
-          start_on_completion: false,
-        };
-
-        const createRes = await api.post("/servers", createPayload);
-        const newServer = createRes.data?.attributes;
-        if (!newServer) {
-          return context.createMessage(
-            buildServerCard({
-              title: "✕ Clone Failed",
-              description: "New server could not be created on target node.",
-            })
-          );
-        }
-
-        const installedServer = await waitForInstallationCompletion(newServer.id);
-        if (!installedServer) {
-          return context.createMessage(
-            buildServerCard({
-              title: "⚠ Install Timed Out",
-              description: "New server creation started, but install did not finish in time.",
-              details: [
-                `├─ **Source:** ${target.attributes.name} (${identifier})`,
-                `├─ **New Server:** ${newServer.identifier}`,
-                `├─ **Target Node:** ${destinationNode.attributes.name} (#${targetNodeId})`,
-                "└─ **Status:** Check the panel in a few minutes.",
-              ],
-            })
-          );
-        }
-
-        const clientReady = await waitForClientFileAccess(installedServer.identifier);
-        if (!clientReady) {
-          return context.createMessage(
-            buildServerCard({
-              title: "⚠ New Server Not Ready",
-              description: "Install completed, but file API is not ready yet.",
-              details: [
-                `├─ **Source:** ${identifier}`,
-                `├─ **New Server:** ${installedServer.identifier}`,
-                "└─ **Action:** Try transfer again in a few minutes.",
-              ],
-            })
-          );
-        }
-
-        try {
-          await clientApiRequest("POST", `/servers/${identifier}/power`, { signal: "stop" });
-          await sleep(3_000);
-        } catch (err) {
-          if (!isInstallConflict(err)) throw err;
-        }
-
-        const copyResult = await copyServerFiles(identifier, installedServer.identifier);
-
-        await api.delete(`/servers/${target.attributes.id}`);
-
-        return context.createMessage(
-          buildServerCard({
-            title: "✔ Transfer Complete",
-            description: `**${target.attributes.name}** was cloned to **${destinationNode.attributes.name}** and old server was removed.`,
-            details: [
-              `├─ **Old Identifier:** ${identifier}`,
-              `├─ **New Identifier:** ${installedServer.identifier}`,
-              `├─ **From Node:** ${target.attributes.node}`,
-              `├─ **To Node:** ${targetNodeId}`,
-              `└─ **Files Copied:** ${copyResult.files} files in ${copyResult.folders} folders.`,
             ],
           })
         );

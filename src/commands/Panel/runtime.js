@@ -62,7 +62,10 @@ async function fetchAllServers() {
 
 async function updateServerRuntimeImage(serverId, dockerImage) {
   try {
-    await api.patch(`/servers/${serverId}/startup`, { docker_image: dockerImage });
+    await api.patch(`/servers/${serverId}/startup`, {
+      image: dockerImage,
+      docker_image: dockerImage,
+    });
     return;
   } catch (initialErr) {
     const detailsRes = await api.get(`/servers/${serverId}`);
@@ -72,6 +75,7 @@ async function updateServerRuntimeImage(serverId, dockerImage) {
       startup: attrs.startup || container.startup_command || "",
       environment: container.environment || {},
       egg: attrs.egg,
+      image: dockerImage,
       docker_image: dockerImage,
     };
 

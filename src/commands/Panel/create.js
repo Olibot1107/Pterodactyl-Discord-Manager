@@ -10,8 +10,17 @@ const {
 const bannedUsers = []; // Discord IDs of banned users, e.g., ["123456789"]
 const whitelistedServers = []; // UUIDs of whitelisted servers
 
-const roleLimits = serverCreation?.roleLimits || [];
-const defaultMax = Number.isInteger(serverCreation?.defaultMax) ? serverCreation.defaultMax : 1;
+const rolePermissions = serverCreation?.rolePermissions || serverCreation?.roleLimits || [];
+const defaultMax = Number.isInteger(serverCreation?.defaultMax) ? serverCreation.defaultMax : 2;
+const defaultLimits = serverCreation?.defaultLimits || {
+  memory: 314,
+  swap: 0,
+  disk: 4096,
+  io: 500,
+  cpu: 50,
+  oom_disabled: false,
+};
+const defaultSecondaryLimits = serverCreation?.secondaryLimits || null;
 
 const eggs = {
   nodejs: {
@@ -41,14 +50,37 @@ const eggs = {
   },
 };
 
-// Returns the max servers allowed for a given Discord guild member
-function getMaxServersForMember(member) {
-  for (const role of roleLimits) {
+function deriveSecondaryLimits(primary) {
+  return {
+    memory: Math.floor((primary.memory ?? defaultLimits.memory) * 0.5),
+    swap: Math.floor((primary.swap ?? defaultLimits.swap) * 0.5),
+    disk: Math.floor((primary.disk ?? defaultLimits.disk) * 0.5),
+    io: Math.floor((primary.io ?? defaultLimits.io) * 0.6),
+    cpu: Math.floor((primary.cpu ?? defaultLimits.cpu) * 0.6),
+    oom_disabled: Boolean(primary.oom_disabled),
+  };
+}
+
+function resolveMemberPlan(member) {
+  for (const role of rolePermissions) {
     if (member.roles.cache.has(role.roleId)) {
-      return { max: role.max, label: role.label };
+      const maxServers = Number.isInteger(role.maxServers) ? role.maxServers : role.max;
+      const primaryLimits = role.limits || defaultLimits;
+      const secondaryLimits =
+        role.secondaryLimits || defaultSecondaryLimits || deriveSecondaryLimits(primaryLimits);
+      return {
+        maxServers: Number.isInteger(maxServers) ? maxServers : defaultMax,
+        primaryLimits,
+        secondaryLimits,
+      };
     }
   }
-  return { max: defaultMax, label: "Default" };
+
+  return {
+    maxServers: defaultMax,
+    primaryLimits: defaultLimits,
+    secondaryLimits: defaultSecondaryLimits || deriveSecondaryLimits(defaultLimits),
+  };
 }
 
 async function getUserByDiscordId(discordId) {
@@ -89,15 +121,6 @@ async function getUserServerCount(pteroUserId) {
 
   return count;
 }
-
-const serverLimits = {
-  memory: 314,
-  swap: 0,
-  disk: 4096,
-  io: 500,
-  cpu: 50,
-  oom_disabled: false,
-};
 
 module.exports = {
   name: "create",
@@ -161,7 +184,8 @@ module.exports = {
       );
     }
 
-    const { max: serverMax } = getMaxServersForMember(member);
+    const plan = resolveMemberPlan(member);
+    const serverMax = plan.maxServers;
 
     const pteroUser = await getUserByDiscordId(discordId);
     if (!pteroUser) {
@@ -185,6 +209,9 @@ module.exports = {
         })
       );
     }
+
+    const creatingSecondary = currentCount >= 1;
+    const serverLimits = creatingSecondary ? plan.secondaryLimits : plan.primaryLimits;
 
     try {
       const res = await api.post("/servers", {
@@ -215,6 +242,7 @@ module.exports = {
           details: [
             `├─ **Name:** ${serverName}`,
             `├─ **Environment:** ${egg.name.replace(".", "")}`,
+            `├─ **Tier:** ${creatingSecondary ? "Secondary (reduced limits)" : "Primary"}`,
             `├─ **RAM:** ${serverLimits.memory}MB`,
             `└─ **Disk:** ${serverLimits.disk}MB`,
           ],

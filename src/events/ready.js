@@ -12,7 +12,6 @@ const path = require("path");
 const fs = require("fs/promises");
 const api = require("../structures/Ptero");
 const { discord, ptero } = require("../../settings");
-const { ensurePersistentVoiceConnection } = require("../structures/voiceKeeper");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
 const SERVER_ROLE_ID = discord.ServerRoleId;
@@ -645,7 +644,4 @@ module.exports = async (client) => {
   updateServerStatusBoard(client);
   setInterval(() => updateServerStatusBoard(client), STATUS_BOARD_INTERVAL_MS);
 
-  // Keep bot in the configured voice channel
-  ensurePersistentVoiceConnection(client);
-  setInterval(() => ensurePersistentVoiceConnection(client), 30_000);
 };

@@ -18,7 +18,6 @@ class PteroBot extends Client {
           GatewayIntentBits.Guilds,
           GatewayIntentBits.GuildMessages,
           GatewayIntentBits.GuildMembers,
-          GatewayIntentBits.GuildVoiceStates,
           GatewayIntentBits.MessageContent,
           GatewayIntentBits.GuildPresences
       ],

@@ -24,6 +24,7 @@ const STATUS_REQUEST_CONCURRENCY = 5;
 const SERVER_STATUS_CHANNEL_ID = "1473827081853861928";
 const STATUS_BOARD_FOOTER_MARKER = "Voidium status board";
 const STATUS_BOARD_STATE_FILE = path.join(__dirname, "..", "data", "statusBoardMessage.json");
+const NODE_ROLE_STATE_FILE = path.join(__dirname, "..", "data", "nodeRoles.json");
 const STATUS_EMOJIS = {
   offline: "<:offline:1473830166932492419>",
   idle: "<:idle:1473830160389378195>",
@@ -213,6 +214,14 @@ function arraysEqual(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
   }
   return true;
 }
@@ -526,6 +535,105 @@ async function updateServerStatusBoard(client) {
 
 // === ROLE ASSIGNMENT ===
 
+async function loadNodeRoleState() {
+  try {
+    const raw = await fs.readFile(NODE_ROLE_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed;
+  } catch {}
+  return { roles: {} };
+}
+
+async function saveNodeRoleState(state) {
+  try {
+    await fs.writeFile(NODE_ROLE_STATE_FILE, JSON.stringify(state, null, 2));
+  } catch (err) {
+    console.warn(`[NodeRoles] Failed to save state file: ${err.message}`);
+  }
+}
+
+function sanitizeNodeRoleName(name, nodeId) {
+  const trimmed = String(name || "").trim();
+  const fallback = `Node ${nodeId}`;
+  return (trimmed || fallback).slice(0, 100);
+}
+
+async function syncNodeRoles(guild, nodes) {
+  const state = await loadNodeRoleState();
+  const rolesByNode = state.roles && typeof state.roles === "object" ? state.roles : {};
+  const desiredNodeIds = new Set();
+  const roleByNodeId = new Map();
+  let changed = false;
+
+  for (const node of nodes) {
+    const nodeId = String(node.id);
+    desiredNodeIds.add(nodeId);
+    const roleName = sanitizeNodeRoleName(node.name || `Node ${node.id}`, node.id);
+    const existing = rolesByNode[nodeId];
+    let role = null;
+
+    if (existing?.roleId) {
+      role = guild.roles.cache.get(existing.roleId) ||
+        await guild.roles.fetch(existing.roleId).catch(() => null);
+    }
+
+    if (!role) {
+      role = guild.roles.cache.find(r => r.name === roleName) || null;
+    }
+
+    if (!role) {
+      try {
+        role = await guild.roles.create({
+          name: roleName,
+          reason: "Sync node roles",
+        });
+      } catch (err) {
+        console.warn(`[NodeRoles] Failed to create role for ${roleName}: ${err.message}`);
+        continue;
+      }
+    } else if (role.name !== roleName) {
+      try {
+        await role.setName(roleName, "Sync node role name");
+      } catch (err) {
+        console.warn(`[NodeRoles] Failed to rename role ${role.id}: ${err.message}`);
+      }
+    }
+
+    roleByNodeId.set(nodeId, role.id);
+    if (!existing || existing.roleId !== role.id || existing.name !== roleName) {
+      rolesByNode[nodeId] = { roleId: role.id, name: roleName };
+      changed = true;
+    }
+  }
+
+  for (const nodeId of Object.keys(rolesByNode)) {
+    if (desiredNodeIds.has(nodeId)) continue;
+    const roleId = rolesByNode[nodeId]?.roleId;
+    if (roleId) {
+      const role = guild.roles.cache.get(roleId) ||
+        await guild.roles.fetch(roleId).catch(() => null);
+      if (role) {
+        try {
+          await role.delete("Node removed");
+        } catch (err) {
+          console.warn(`[NodeRoles] Failed to delete role ${roleId}: ${err.message}`);
+        }
+      }
+    }
+    delete rolesByNode[nodeId];
+    changed = true;
+  }
+
+  if (changed) {
+    await saveNodeRoleState({ roles: rolesByNode });
+  }
+
+  return {
+    roleByNodeId,
+    managedRoleIds: new Set(Object.values(rolesByNode).map((entry) => entry.roleId)),
+  };
+}
+
 async function assignRolesAndAnnounce(client) {
   console.log("[RoleSync] Starting role assignment task...");
 
@@ -538,6 +646,8 @@ async function assignRolesAndAnnounce(client) {
   // 1) Build map of panelUserID (number) → discordId (string)
   let panelUsers;
   let allServers;
+  let nodeRoleByNodeId = new Map();
+  let managedNodeRoleIds = new Set();
   try {
     const rawUsers = await fetchAllPages("/users");
     panelUsers = new Map(
@@ -547,6 +657,22 @@ async function assignRolesAndAnnounce(client) {
     );
 
     allServers = await fetchAllPages("/servers");
+
+    try {
+      const rawNodes = await fetchAllPages("/nodes");
+      const nodes = rawNodes
+        .map((node) => node?.attributes)
+        .filter(Boolean)
+        .map((node) => ({
+          id: node.id,
+          name: node.name || `Node ${node.id}`,
+        }));
+      const syncResult = await syncNodeRoles(guild, nodes);
+      nodeRoleByNodeId = syncResult.roleByNodeId;
+      managedNodeRoleIds = syncResult.managedRoleIds;
+    } catch (err) {
+      console.warn("[NodeRoles] Failed to sync node roles:", err.message);
+    }
   } catch (err) {
     console.error("[RoleSync] Failed to fetch panel data:", err.message);
     return;
@@ -556,10 +682,21 @@ async function assignRolesAndAnnounce(client) {
 
   // 2) Collect Discord IDs of users who own at least one non-whitelisted server
   const owners = new Set();
+  const nodeRolesByDiscordId = new Map();
   for (const { attributes: s } of allServers) {
     if (WHITELISTED_UUIDS.includes(s.uuid)) continue;
     const discordId = panelUsers.get(s.user);
     if (discordId) owners.add(discordId);
+
+    if (discordId && nodeRoleByNodeId.size > 0) {
+      const nodeRoleId = nodeRoleByNodeId.get(String(s.node));
+      if (nodeRoleId) {
+        if (!nodeRolesByDiscordId.has(discordId)) {
+          nodeRolesByDiscordId.set(discordId, new Set());
+        }
+        nodeRolesByDiscordId.get(discordId).add(nodeRoleId);
+      }
+    }
   }
 
   // 3) Sync roles for every linked panel user
@@ -572,32 +709,36 @@ async function assignRolesAndAnnounce(client) {
     }
 
     const ownsServer = owners.has(discordId);
-    const hasNoServerRole = member.roles.cache.has(NO_SERVER_ROLE_ID);
-    const hasServerRole = member.roles.cache.has(SERVER_ROLE_ID);
+    const desiredManagedRoles = new Set();
+    if (ownsServer) desiredManagedRoles.add(SERVER_ROLE_ID);
+    else desiredManagedRoles.add(NO_SERVER_ROLE_ID);
+
+    const nodeRoles = nodeRolesByDiscordId.get(discordId);
+    if (nodeRoles) {
+      for (const roleId of nodeRoles) desiredManagedRoles.add(roleId);
+    }
+
+    const currentManagedRoles = new Set();
+    if (member.roles.cache.has(SERVER_ROLE_ID)) currentManagedRoles.add(SERVER_ROLE_ID);
+    if (member.roles.cache.has(NO_SERVER_ROLE_ID)) currentManagedRoles.add(NO_SERVER_ROLE_ID);
+    for (const roleId of managedNodeRoleIds) {
+      if (member.roles.cache.has(roleId)) currentManagedRoles.add(roleId);
+    }
 
     console.log(
-      `[RoleSync] ${member.user.tag}: ownsServer=${ownsServer}, hasServerRole=${hasServerRole}, hasNoServerRole=${hasNoServerRole}`
+      `[RoleSync] ${member.user.tag}: ownsServer=${ownsServer}, nodes=${nodeRoles?.size || 0}`
     );
 
-    // Build the desired final role list in one shot to avoid cache desync
-    const alreadyHasCorrectRoles =
-      ownsServer ? (hasServerRole && !hasNoServerRole)
-                 : (!hasServerRole && hasNoServerRole);
-
-    if (alreadyHasCorrectRoles) continue;
+    if (setsEqual(currentManagedRoles, desiredManagedRoles)) continue;
 
     try {
-      // Start from current roles, then swap out only the two managed roles
+      // Start from current roles, then swap out managed roles in one shot
       const newRoles = member.roles.cache
-        .filter(r => r.id !== SERVER_ROLE_ID && r.id !== NO_SERVER_ROLE_ID)
+        .filter(r => r.id !== SERVER_ROLE_ID && r.id !== NO_SERVER_ROLE_ID && !managedNodeRoleIds.has(r.id))
         .map(r => r.id);
 
-      if (ownsServer) {
-        newRoles.push(SERVER_ROLE_ID);
-        console.log(`[RoleSync] → ${member.user.tag}: grant Server, remove No-Server`);
-      } else {
-        newRoles.push(NO_SERVER_ROLE_ID);
-        console.log(`[RoleSync] → ${member.user.tag}: grant No-Server, remove Server`);
+      for (const roleId of desiredManagedRoles) {
+        newRoles.push(roleId);
       }
 
       await member.roles.set(newRoles);

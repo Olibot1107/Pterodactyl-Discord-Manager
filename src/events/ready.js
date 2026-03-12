@@ -894,6 +894,8 @@ module.exports = async (client) => {
         type: ApplicationCommandType.ChatInput,
         dmPermission: false,
       }));
+    // Clear existing commands first to ensure stale ones are removed.
+    await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
     await rest.put(Routes.applicationCommands(client.user.id), { body: cmds });
     console.log(`[Commands] Registered ${cmds.length} slash commands.`);
   } catch (err) {

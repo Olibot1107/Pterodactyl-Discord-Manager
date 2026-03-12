@@ -3,6 +3,7 @@ const api = require("../../structures/Ptero");
 const User = require("../../models/User");
 const ServerWebhook = require("../../models/ServerWebhook");
 const { buildServerCard } = require("../../structures/serverCommandUi");
+const { adminid } = require("../../../settings");
 
 const WEBHOOK_URL_RE = /^https?:\/\/(canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+/i;
 
@@ -18,7 +19,10 @@ async function fetchAllServers() {
 }
 
 function hasAdminAccess(actor) {
-  return actor.memberPermissions?.has(PermissionFlagsBits.Administrator);
+  return (
+    actor.user?.id === adminid ||
+    actor.memberPermissions?.has(PermissionFlagsBits.Administrator)
+  );
 }
 
 async function getUserAndOwnedServers(discordId) {

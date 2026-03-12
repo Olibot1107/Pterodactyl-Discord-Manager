@@ -78,8 +78,13 @@ module.exports = async (client, interaction) => {
     try {
       // Create context with properly bound methods and preserved references
       if (shouldDeferEphemeral) {
-        interaction.createMessage = (opts) =>
-          interaction.followUp({ ...opts, flags: MessageFlags.Ephemeral });
+        interaction.createMessage = (opts) => {
+          const baseFlags = typeof opts?.flags === "number" ? opts.flags : 0;
+          return interaction.followUp({
+            ...opts,
+            flags: baseFlags | MessageFlags.Ephemeral,
+          });
+        };
       } else {
         interaction.createMessage = (opts) => interaction.followUp(opts);
       }

@@ -40,6 +40,26 @@ db.serialize(() => {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS serverWebhooks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      discordId TEXT NOT NULL,
+      serverIdentifier TEXT NOT NULL,
+      webhookUrl TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      UNIQUE(discordId, serverIdentifier)
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS serverStateCache (
+      serverIdentifier TEXT PRIMARY KEY,
+      lastState TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+  `);
+
   db.get(
     `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stickyMessages'`,
     (schemaErr, schemaRow) => {
@@ -363,4 +383,109 @@ const StickyMessage = {
   }
 };
 
-module.exports = { db, User, PendingUser, StickyMessage };
+// Server webhook subscription model functions
+const ServerWebhook = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM serverWebhooks WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  findMany: (query = {}, options = {}) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.length
+        ? ` WHERE ${keys.map(key => `${key} = ?`).join(' AND ')}`
+        : '';
+      const orderByClause = options.orderBy ? ` ORDER BY ${options.orderBy}` : '';
+      db.all(
+        `SELECT * FROM serverWebhooks${whereClause}${orderByClause}`,
+        values,
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+  },
+
+  upsert: (data) => {
+    return new Promise((resolve, reject) => {
+      const now = data.updatedAt || Date.now();
+      db.run(
+        `
+          INSERT INTO serverWebhooks (discordId, serverIdentifier, webhookUrl, createdAt, updatedAt)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(discordId, serverIdentifier)
+          DO UPDATE SET webhookUrl = excluded.webhookUrl, updatedAt = excluded.updatedAt
+        `,
+        [
+          data.discordId,
+          data.serverIdentifier,
+          data.webhookUrl,
+          data.createdAt || now,
+          now,
+        ],
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.run(`DELETE FROM serverWebhooks WHERE ${whereClause}`, values, function(err) {
+        if (err) reject(err);
+        else resolve({ affectedRows: this.changes });
+      });
+    });
+  },
+};
+
+// Server state cache model functions
+const ServerState = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM serverStateCache WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  upsert: (data) => {
+    return new Promise((resolve, reject) => {
+      const now = data.updatedAt || Date.now();
+      db.run(
+        `
+          INSERT INTO serverStateCache (serverIdentifier, lastState, updatedAt)
+          VALUES (?, ?, ?)
+          ON CONFLICT(serverIdentifier)
+          DO UPDATE SET lastState = excluded.lastState, updatedAt = excluded.updatedAt
+        `,
+        [data.serverIdentifier, data.lastState, now],
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data });
+        }
+      );
+    });
+  },
+};
+
+module.exports = { db, User, PendingUser, StickyMessage, ServerWebhook, ServerState };

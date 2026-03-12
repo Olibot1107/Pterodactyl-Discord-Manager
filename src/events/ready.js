@@ -12,6 +12,8 @@ const path = require("path");
 const fs = require("fs/promises");
 const api = require("../structures/Ptero");
 const { discord, ptero } = require("../../settings");
+const ServerWebhook = require("../models/ServerWebhook");
+const ServerState = require("../models/ServerState");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
 const SERVER_ROLE_ID = discord.ServerRoleId;
@@ -33,6 +35,7 @@ const STATUS_EMOJIS = {
   ram: "<:wizard_ram:1473829520996962592>",
   ssd: "<:wizard_ssd:1473829536838717584>",
 };
+const WEBHOOK_SEND_TIMEOUT_MS = 5_000;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let statusBoardMessageIds = [];
 let statusBoardMessageIdsLoaded = false;
@@ -265,6 +268,122 @@ function getStateDetails(currentState) {
   return { bucket: "idle", emoji: STATUS_EMOJIS.idle, label: state };
 }
 
+function isUpState(state) {
+  return state === "running" || state === "starting";
+}
+
+function isDownState(state) {
+  return state === "offline" || state === "stopped";
+}
+
+function buildWebhookPayload(server, fromState, toState) {
+  const fromLabel = fromState || "unknown";
+  const toLabel = toState || "unknown";
+  const normalizedTo = String(toState || "").toLowerCase();
+  const title = isUpState(normalizedTo)
+    ? "Server is up"
+    : isDownState(normalizedTo)
+      ? "Server is down"
+      : "Server status changed";
+  const color = isUpState(normalizedTo) ? 0x2ecc71 : isDownState(normalizedTo) ? 0xe74c3c : 0xf1c40f;
+
+  return {
+    embeds: [
+      {
+        title,
+        color,
+        fields: [
+          { name: "Server", value: `${server.name} (\`${server.identifier}\`)`, inline: false },
+          { name: "State", value: `\`${fromLabel}\` → \`${toLabel}\``, inline: true },
+          { name: "Node", value: server.nodeName || "Unknown", inline: true },
+        ],
+        timestamp: new Date().toISOString(),
+      },
+    ],
+  };
+}
+
+async function sendWebhookNotification(webhookUrl, payload) {
+  return axios.post(webhookUrl, payload, {
+    timeout: WEBHOOK_SEND_TIMEOUT_MS,
+    validateStatus: () => true,
+  });
+}
+
+async function notifyWebhookSubscriptions(serverStatuses) {
+  let subscriptions = [];
+  try {
+    subscriptions = await ServerWebhook.findMany();
+  } catch (err) {
+    console.warn("[Webhooks] Failed to load webhook subscriptions:", err.message);
+    return;
+  }
+
+  if (!subscriptions.length) return;
+
+  const subsByServer = new Map();
+  for (const sub of subscriptions) {
+    if (!sub?.serverIdentifier || !sub?.webhookUrl) continue;
+    if (!subsByServer.has(sub.serverIdentifier)) subsByServer.set(sub.serverIdentifier, []);
+    subsByServer.get(sub.serverIdentifier).push(sub);
+  }
+
+  await Promise.all(
+    serverStatuses.map(async (server) => {
+      const subs = subsByServer.get(server.identifier);
+      if (!subs?.length) return;
+
+      const currentState = String(server.state || "offline").toLowerCase();
+      let previous = null;
+      try {
+        const cached = await ServerState.findOne({ serverIdentifier: server.identifier });
+        previous = cached?.lastState || null;
+      } catch (err) {
+        console.warn(`[Webhooks] Failed to read state cache for ${server.identifier}:`, err.message);
+      }
+
+      if (!previous) {
+        await ServerState.upsert({
+          serverIdentifier: server.identifier,
+          lastState: currentState,
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+
+      if (previous === currentState) return;
+
+      await ServerState.upsert({
+        serverIdentifier: server.identifier,
+        lastState: currentState,
+        updatedAt: Date.now(),
+      });
+
+      const payload = buildWebhookPayload(server, previous, currentState);
+
+      const results = await Promise.allSettled(
+        subs.map((sub) => sendWebhookNotification(sub.webhookUrl, payload))
+      );
+
+      results.forEach((result, index) => {
+        if (result.status !== "fulfilled") {
+          console.warn("[Webhooks] Failed to send webhook:", result.reason?.message || result.reason);
+          return;
+        }
+        const status = result.value?.status;
+        if (status === 404 || status === 401) {
+          const sub = subs[index];
+          ServerWebhook.deleteOne({
+            discordId: sub.discordId,
+            serverIdentifier: sub.serverIdentifier,
+          }).catch(() => null);
+          console.warn("[Webhooks] Removed invalid webhook subscription.");
+        }
+      });
+    })
+  );
+}
+
 function buildBoardMessage(container) {
   return {
     flags: MessageFlags.IsComponentsV2,
@@ -478,6 +597,10 @@ async function updateServerStatusBoard(client) {
       } catch (err) {
         failedServers += 1;
       }
+    });
+
+    notifyWebhookSubscriptions(serverStatuses).catch((err) => {
+      console.warn("[Webhooks] Failed to process subscriptions:", err.message);
     });
 
     const nextMessages = buildStatusMessages(

@@ -7,7 +7,7 @@ A Discord bot for managing user registration, server creation, and administratio
 - **User Registration:** Register with email verification and OTP.
 - **Server Creation:** Create servers with resource tiers (Free/Premium) and select from Node.js, Python, or Java eggs.
 - **Account Management:** Delete account and view owned servers.
-- **Admin Tools:** Suspend/unsuspend servers, timeout users, and ban users.
+- **Admin Tools:** Suspend/unsuspend servers.
 - **Role Sync:** Automatically assign roles based on server ownership.
 
 ## Commands
@@ -19,9 +19,6 @@ A Discord bot for managing user registration, server creation, and administratio
 - `/list` – View your servers.
 - `/server <start|stop|restart|kill|status|suspend|unsuspend>` – Manage server power and suspension.
 - `/runtime <nodejs|python> <server> <version>` – Change your server runtime image/version.
-- `/adminservers <list|delete|purge> <user> [server] [delete_account]` – (Admin) List, delete one, or purge all servers for a linked user.
-- `/timeout <user> <minutes> [reason]` – (Admin) Timeout user and suspend all their servers.
-- `/ban <user> [reason] [prune_hours]` – (Admin) Ban user from the guild.
 - `/stick <add|edit|remove|remove_from_list|list|config|toggle>` – (Admin) Manage multiple sticky messages per channel (use sticky IDs or list index).
 - `/ping` – Check bot latency.
 
@@ -72,4 +69,4 @@ A Discord bot for managing user registration, server creation, and administratio
 
 ## Notes
 
-- Only admins can use moderation commands like `/server suspend`, `/server unsuspend`, `/timeout`, and `/ban`.
+- Only admins can use moderation commands like `/server suspend` and `/server unsuspend`.

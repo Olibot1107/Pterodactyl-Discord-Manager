@@ -97,6 +97,18 @@ db.serialize(() => {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS boosterPremiums (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      discordId TEXT NOT NULL UNIQUE,
+      serverId INTEGER NOT NULL,
+      serverIdentifier TEXT NOT NULL,
+      originalLimits TEXT NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+  `);
+
   db.get(
     `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stickyMessages'`,
     (schemaErr, schemaRow) => {
@@ -542,4 +554,47 @@ const ServerState = {
   },
 };
 
-module.exports = { db, User, PendingUser, StickyMessage, ServerWebhook, ServerState };
+// Booster premium model functions
+const BoosterPremium = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM boosterPremiums WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  create: (data) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(data);
+      const placeholders = keys.map(() => '?').join(',');
+      const values = Object.values(data);
+      db.run(
+        `INSERT INTO boosterPremiums (${keys.join(',')}) VALUES (${placeholders})`,
+        values,
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.run(`DELETE FROM boosterPremiums WHERE ${whereClause}`, values, function(err) {
+        if (err) reject(err);
+        else resolve({ affectedRows: this.changes });
+      });
+    });
+  },
+};
+
+module.exports = { db, User, PendingUser, StickyMessage, ServerWebhook, ServerState, BoosterPremium };

@@ -1,7 +1,10 @@
 const { ChannelType, EmbedBuilder } = require("discord.js");
+const { discord } = require("../../settings");
+const BoosterPremium = require("../models/BoosterPremium");
+const { updateServerBuild } = require("../structures/pteroBuild");
 
 const THANK_YOU_CHANNEL_ID = "1472918619544621070";
-const BOOSTER_ROLE_ID = "1473717031202193408";
+const BOOSTER_ROLE_ID = discord?.boosterRoleId || "1473717031202193408";
 
 module.exports = async (client, oldMember, newMember) => {
   try {
@@ -94,6 +97,35 @@ module.exports = async (client, oldMember, newMember) => {
         embeds: [embed],
         allowedMentions: { users: [newMember.user.id] }
       });
+
+      // Revoke premium server perks if set
+      try {
+        const premium = await BoosterPremium.findOne({ discordId: newMember.user.id });
+        if (premium) {
+          let originalLimits = {};
+          try {
+            originalLimits = JSON.parse(premium.originalLimits || "{}");
+          } catch (parseErr) {
+            console.warn("[Booster] Failed to parse original limits for premium rollback:", parseErr.message);
+          }
+
+          try {
+            await updateServerBuild(premium.serverId, originalLimits);
+            console.log(
+              `[Booster] Reverted premium limits for ${newMember.user.tag} on ${premium.serverIdentifier}`
+            );
+          } catch (updateErr) {
+            console.warn(
+              `[Booster] Failed to revert premium limits for ${premium.serverIdentifier}:`,
+              updateErr.response?.data || updateErr.message
+            );
+          }
+
+          await BoosterPremium.deleteOne({ discordId: newMember.user.id });
+        }
+      } catch (err) {
+        console.warn("[Booster] Failed to revoke premium server:", err.message);
+      }
     }
   } catch (error) {
     console.error(`[Booster] Error handling guild member update:`, error);

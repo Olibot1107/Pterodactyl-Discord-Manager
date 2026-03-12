@@ -276,7 +276,17 @@ function isDownState(state) {
   return state === "offline" || state === "stopped";
 }
 
-function buildWebhookPayload(server, fromState, toState) {
+function applyTemplate(template, data) {
+  return String(template || "")
+    .replace(/\{server\}/gi, data.serverName)
+    .replace(/\{id\}/gi, data.serverIdentifier)
+    .replace(/\{from\}/gi, data.fromState)
+    .replace(/\{to\}/gi, data.toState)
+    .replace(/\{state\}/gi, data.toState)
+    .replace(/\{node\}/gi, data.nodeName);
+}
+
+function buildWebhookPayload(server, fromState, toState, options = {}) {
   const fromLabel = fromState || "unknown";
   const toLabel = toState || "unknown";
   const normalizedTo = String(toState || "").toLowerCase();
@@ -287,7 +297,21 @@ function buildWebhookPayload(server, fromState, toState) {
       : "Server status changed";
   const color = isUpState(normalizedTo) ? 0x2ecc71 : isDownState(normalizedTo) ? 0xe74c3c : 0xf1c40f;
 
+  const templateData = {
+    serverName: server.name,
+    serverIdentifier: server.identifier,
+    fromState: fromLabel,
+    toState: toLabel,
+    nodeName: server.nodeName || "Unknown",
+  };
+  const content = options.messageTemplate
+    ? applyTemplate(options.messageTemplate, templateData)
+    : `Server **${server.name}** changed: \`${fromLabel}\` → \`${toLabel}\``;
+
   return {
+    username: options.defaultName,
+    avatar_url: options.defaultAvatarUrl,
+    content,
     embeds: [
       {
         title,
@@ -310,7 +334,7 @@ async function sendWebhookNotification(webhookUrl, payload) {
   });
 }
 
-async function notifyWebhookSubscriptions(serverStatuses) {
+async function notifyWebhookSubscriptions(client, serverStatuses) {
   let subscriptions = [];
   try {
     subscriptions = await ServerWebhook.findMany();
@@ -359,10 +383,15 @@ async function notifyWebhookSubscriptions(serverStatuses) {
         updatedAt: Date.now(),
       });
 
-      const payload = buildWebhookPayload(server, previous, currentState);
-
       const results = await Promise.allSettled(
-        subs.map((sub) => sendWebhookNotification(sub.webhookUrl, payload))
+        subs.map((sub) => {
+          const payload = buildWebhookPayload(server, previous, currentState, {
+            messageTemplate: sub.messageTemplate,
+            defaultName: client.user?.username,
+            defaultAvatarUrl: client.user?.displayAvatarURL(),
+          });
+          return sendWebhookNotification(sub.webhookUrl, payload);
+        })
       );
 
       results.forEach((result, index) => {
@@ -599,7 +628,7 @@ async function updateServerStatusBoard(client) {
       }
     });
 
-    notifyWebhookSubscriptions(serverStatuses).catch((err) => {
+    notifyWebhookSubscriptions(client, serverStatuses).catch((err) => {
       console.warn("[Webhooks] Failed to process subscriptions:", err.message);
     });
 

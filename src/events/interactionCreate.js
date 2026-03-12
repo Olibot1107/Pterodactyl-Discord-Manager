@@ -63,7 +63,7 @@ module.exports = async (client, interaction) => {
     }
 
     // Defer based on command preference
-    const ephemeralCommands = ['register'];
+    const ephemeralCommands = ['register', 'webhook'];
     const shouldDeferEphemeral = ephemeralCommands.includes(command.name);
     
     try {
@@ -77,7 +77,12 @@ module.exports = async (client, interaction) => {
 
     try {
       // Create context with properly bound methods and preserved references
-      interaction.createMessage = (opts) => interaction.followUp(opts);
+      if (shouldDeferEphemeral) {
+        interaction.createMessage = (opts) =>
+          interaction.followUp({ ...opts, flags: MessageFlags.Ephemeral });
+      } else {
+        interaction.createMessage = (opts) => interaction.followUp(opts);
+      }
       await command.run({ client, context: interaction });
     } catch (error) {
       console.error("Command error:", error);

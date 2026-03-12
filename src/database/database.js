@@ -46,11 +46,48 @@ db.serialize(() => {
       discordId TEXT NOT NULL,
       serverIdentifier TEXT NOT NULL,
       webhookUrl TEXT NOT NULL,
+      messageTemplate TEXT,
+      webhookName TEXT,
+      webhookAvatarUrl TEXT,
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL,
       UNIQUE(discordId, serverIdentifier)
     );
   `);
+
+  db.get(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'serverWebhooks'`,
+    (schemaErr, schemaRow) => {
+      if (schemaErr) {
+        console.warn("[DB] Failed to inspect serverWebhooks table SQL:", schemaErr.message);
+        return;
+      }
+
+      db.all(`PRAGMA table_info(serverWebhooks)`, (infoErr, columns) => {
+        if (infoErr) {
+          console.warn("[DB] Failed to inspect serverWebhooks schema:", infoErr.message);
+          return;
+        }
+
+        const colNames = Array.isArray(columns) ? columns.map((c) => c.name) : [];
+        const ensureColumn = (name, type, defaultSql = "") => {
+          if (colNames.includes(name)) return;
+          db.run(
+            `ALTER TABLE serverWebhooks ADD COLUMN ${name} ${type} ${defaultSql}`,
+            (alterErr) => {
+              if (alterErr) {
+                console.warn(`[DB] Failed to add ${name} to serverWebhooks:`, alterErr.message);
+              }
+            }
+          );
+        };
+
+        ensureColumn("messageTemplate", "TEXT");
+        ensureColumn("webhookName", "TEXT");
+        ensureColumn("webhookAvatarUrl", "TEXT");
+      });
+    }
+  );
 
   db.run(`
     CREATE TABLE IF NOT EXISTS serverStateCache (
@@ -421,15 +458,32 @@ const ServerWebhook = {
       const now = data.updatedAt || Date.now();
       db.run(
         `
-          INSERT INTO serverWebhooks (discordId, serverIdentifier, webhookUrl, createdAt, updatedAt)
-          VALUES (?, ?, ?, ?, ?)
+          INSERT INTO serverWebhooks (
+            discordId,
+            serverIdentifier,
+            webhookUrl,
+            messageTemplate,
+            webhookName,
+            webhookAvatarUrl,
+            createdAt,
+            updatedAt
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(discordId, serverIdentifier)
-          DO UPDATE SET webhookUrl = excluded.webhookUrl, updatedAt = excluded.updatedAt
+          DO UPDATE SET
+            webhookUrl = excluded.webhookUrl,
+            messageTemplate = excluded.messageTemplate,
+            webhookName = excluded.webhookName,
+            webhookAvatarUrl = excluded.webhookAvatarUrl,
+            updatedAt = excluded.updatedAt
         `,
         [
           data.discordId,
           data.serverIdentifier,
           data.webhookUrl,
+          data.messageTemplate || null,
+          data.webhookName || null,
+          data.webhookAvatarUrl || null,
           data.createdAt || now,
           now,
         ],

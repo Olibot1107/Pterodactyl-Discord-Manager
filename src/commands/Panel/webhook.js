@@ -7,6 +7,16 @@ const { adminid } = require("../../../settings");
 
 const WEBHOOK_URL_RE = /^https?:\/\/(canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+/i;
 
+function maskWebhookUrl(url) {
+  if (!url) return "hidden";
+  const match = url.match(/\/webhooks\/(\d+)\/([\w-]+)/i);
+  if (!match) return "hidden";
+  const id = match[1];
+  const token = match[2];
+  const tokenTail = token.length > 6 ? token.slice(-6) : token;
+  return `id:${id} …${tokenTail}`;
+}
+
 async function fetchAllServers() {
   const allServers = [];
   for (let page = 1; ; page++) {
@@ -55,6 +65,12 @@ module.exports = {
           description: "Discord webhook URL",
           type: ApplicationCommandOptionType.String,
           required: true,
+        },
+        {
+          name: "message",
+          description: "Custom message (optional). Use {server}, {id}, {from}, {to}, {node}",
+          type: ApplicationCommandOptionType.String,
+          required: false,
         },
       ],
     },
@@ -142,7 +158,10 @@ module.exports = {
           );
         }
 
-        const lines = subs.slice(0, 20).map((sub) => `• \`${sub.serverIdentifier}\` → ${sub.webhookUrl}`);
+        const lines = subs.slice(0, 20).map((sub) => {
+          const templateLabel = sub.messageTemplate ? "custom msg" : "default msg";
+          return `• \`${sub.serverIdentifier}\` → ${maskWebhookUrl(sub.webhookUrl)} (${templateLabel})`;
+        });
         const extra = subs.length > 20 ? `\n…and ${subs.length - 20} more.` : "";
         return context.createMessage(
           buildServerCard({
@@ -166,6 +185,9 @@ module.exports = {
 
       if (subcommand === "set") {
         const url = String(context.options.getString("url") || "").trim();
+        const rawMessage = context.options.getString("message");
+        const message = rawMessage ? String(rawMessage).trim() : null;
+        const shouldClearMessage = message && ["default", "reset", "clear"].includes(message.toLowerCase());
         if (!WEBHOOK_URL_RE.test(url)) {
           return context.createMessage(
             buildServerCard({
@@ -175,11 +197,19 @@ module.exports = {
           );
         }
 
+        const existing = await ServerWebhook.findOne({
+          discordId,
+          serverIdentifier: identifier,
+        });
+
         await ServerWebhook.upsert({
           discordId,
           serverIdentifier: identifier,
           webhookUrl: url,
-          createdAt: Date.now(),
+          messageTemplate: shouldClearMessage
+            ? null
+            : (message ?? existing?.messageTemplate ?? null),
+          createdAt: existing?.createdAt || Date.now(),
           updatedAt: Date.now(),
         });
 
@@ -187,7 +217,10 @@ module.exports = {
           buildServerCard({
             title: "Webhook set",
             description:
-              `We'll notify this webhook when **${owned.attributes.name}** changes state.`,
+              `We'll notify this webhook when **${owned.attributes.name}** changes state.` +
+              (shouldClearMessage
+                ? "\nMessage template reset to default."
+                : (message ? "\nCustom message saved." : "")),
           })
         );
       }

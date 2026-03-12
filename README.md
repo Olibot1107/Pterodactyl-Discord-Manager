@@ -19,7 +19,7 @@ A Discord bot for managing user registration, server creation, and administratio
 - `/list` – View your servers.
 - `/server <start|stop|restart|kill|status|suspend|unsuspend>` – Manage server power and suspension.
 - `/runtime <nodejs|python> <server> <version>` – Change your server runtime image/version.
-- `/webhook <set|remove|list> <server> [url]` – Send server status changes to a Discord webhook.
+- `/webhook <set|remove|list> <server> [url]` – Send server status changes to a Discord webhook. Supports `{server}`, `{id}`, `{from}`, `{to}`, `{node}` in custom messages.
 - `/stick <add|edit|remove|remove_from_list|list|config|toggle>` – (Admin) Manage multiple sticky messages per channel (use sticky IDs or list index).
 - `/ping` – Check bot latency.
 

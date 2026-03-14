@@ -921,7 +921,7 @@ module.exports = async (client) => {
         description: c.description,
         options: c.options || [],
         type: ApplicationCommandType.ChatInput,
-        dmPermission: false,
+        dmPermission: Boolean(c.dmPermission),
       }));
     // Clear existing commands first to ensure stale ones are removed.
     await rest.put(Routes.applicationCommands(client.user.id), { body: [] });

@@ -1,6 +1,5 @@
 const { ClusterManager, ReClusterManager } = require("discord-hybrid-sharding");
 const { TOKEN } = require("./settings");
-require("./sidebot/server");
 const manager = new ClusterManager("./src/bot.js", {
   token: TOKEN,
   totalShards: "auto",

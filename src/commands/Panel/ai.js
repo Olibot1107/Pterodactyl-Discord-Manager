@@ -424,8 +424,8 @@ function buildWriteApprovalCard(path, content) {
   const preview = truncateText(content, MAX_TEXT_CHARS);
   return buildServerCard({
     title: "Approve file write?",
-    description: `File: \\`${path}\\``,
-    details: [`\\`\\`\\`txt\\n${preview.replace(/```/g, \"````\")}\\n\\`\\`\\``],
+    description: `File: \`${path}\``,
+    details: [`\`\`\`txt\n${preview.replace(/```/g, "````")}\n\`\`\``],
     buttonDivider: true,
   });
 }
@@ -450,10 +450,13 @@ async function requestWriteApproval({ client, context, session, path, content })
     .setLabel("Deny");
 
   const payload = buildWriteApprovalCard(path, content);
-  const message = await context.createMessage({
-    ...payload,
-    components: [...payload.components, new ActionRowBuilder().addComponents(approveButton, denyButton)],
-  });
+  const container = payload.components?.[0];
+  if (container?.addActionRowComponents) {
+    container.addActionRowComponents(
+      new ActionRowBuilder().addComponents(approveButton, denyButton)
+    );
+  }
+  const message = await context.createMessage(payload);
 
   const collector = message.createMessageComponentCollector({
     componentType: ComponentType.Button,
@@ -484,7 +487,7 @@ async function requestWriteApproval({ client, context, session, path, content })
         await interaction.update(
           buildServerCard({
             title: "File written",
-            description: `Saved \\`${pending.path}\\` on **${pending.session.name}**.`,
+            description: `Saved \`${pending.path}\` on **${pending.session.name}**.`,
           })
         );
       } catch (err) {

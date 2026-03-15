@@ -1,7 +1,9 @@
 const { ChannelType, EmbedBuilder } = require("discord.js");
 const { discord } = require("../../settings");
 const BoosterPremium = require("../models/BoosterPremium");
+const CustomDomain = require("../models/CustomDomain");
 const { updateServerBuild } = require("../structures/pteroBuild");
+const { createProxyAdminClient, getProxyAdminConfig } = require("../structures/ProxyAdmin");
 
 const THANK_YOU_CHANNEL_ID = "1472918619544621070";
 const BOOSTER_ROLE_ID = discord?.boosterRoleId || "1473717031202193408";
@@ -125,6 +127,46 @@ module.exports = async (client, oldMember, newMember) => {
         }
       } catch (err) {
         console.warn("[Booster] Failed to revoke premium server:", err.message);
+      }
+
+      // Revoke custom domains if set
+      try {
+        const domains = await CustomDomain.findMany({ discordId: newMember.user.id });
+        if (domains.length) {
+          const { adminBaseUrl, masterToken } = getProxyAdminConfig();
+          if (!adminBaseUrl || !masterToken) {
+            console.warn("[Booster] Custom domain admin not configured; skipping domain removal.");
+          } else {
+            const proxyAdmin = createProxyAdminClient();
+            if (!proxyAdmin) {
+              console.warn("[Booster] Failed to create proxy admin client; skipping domain removal.");
+            } else {
+              for (const entry of domains) {
+                try {
+                  const res = await proxyAdmin.delete("/domains", {
+                    data: { domain: entry.domain },
+                    validateStatus: () => true,
+                  });
+                  if (res.status === 200 || res.status === 404) {
+                    await CustomDomain.deleteOne({ id: entry.id });
+                  } else {
+                    console.warn(
+                      `[Booster] Failed to remove custom domain ${entry.domain}:`,
+                      res?.data || res.status
+                    );
+                  }
+                } catch (removeErr) {
+                  console.warn(
+                    `[Booster] Failed to remove custom domain ${entry.domain}:`,
+                    removeErr.response?.data || removeErr.message
+                  );
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[Booster] Failed to revoke custom domains:", err.message);
       }
     }
   } catch (error) {

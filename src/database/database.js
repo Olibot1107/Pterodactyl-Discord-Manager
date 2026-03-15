@@ -55,6 +55,23 @@ db.serialize(() => {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS customDomains (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      discordId TEXT NOT NULL,
+      serverId INTEGER NOT NULL,
+      serverIdentifier TEXT NOT NULL,
+      domain TEXT NOT NULL UNIQUE,
+      target TEXT NOT NULL,
+      port INTEGER NOT NULL,
+      nodeId INTEGER,
+      nodeName TEXT,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      UNIQUE(discordId, serverIdentifier)
+    );
+  `);
+
   db.get(
     `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'serverWebhooks'`,
     (schemaErr, schemaRow) => {
@@ -520,6 +537,99 @@ const ServerWebhook = {
   },
 };
 
+// Custom domain model functions
+const CustomDomain = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM customDomains WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  findMany: (query = {}, options = {}) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.length
+        ? ` WHERE ${keys.map(key => `${key} = ?`).join(' AND ')}`
+        : '';
+      const orderByClause = options.orderBy ? ` ORDER BY ${options.orderBy}` : '';
+      db.all(
+        `SELECT * FROM customDomains${whereClause}${orderByClause}`,
+        values,
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+  },
+
+  upsert: (data) => {
+    return new Promise((resolve, reject) => {
+      const now = data.updatedAt || Date.now();
+      db.run(
+        `
+          INSERT INTO customDomains (
+            discordId,
+            serverId,
+            serverIdentifier,
+            domain,
+            target,
+            port,
+            nodeId,
+            nodeName,
+            createdAt,
+            updatedAt
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(discordId, serverIdentifier)
+          DO UPDATE SET
+            domain = excluded.domain,
+            target = excluded.target,
+            port = excluded.port,
+            nodeId = excluded.nodeId,
+            nodeName = excluded.nodeName,
+            updatedAt = excluded.updatedAt
+        `,
+        [
+          data.discordId,
+          data.serverId,
+          data.serverIdentifier,
+          data.domain,
+          data.target,
+          data.port,
+          data.nodeId ?? null,
+          data.nodeName ?? null,
+          data.createdAt || now,
+          now,
+        ],
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.run(`DELETE FROM customDomains WHERE ${whereClause}`, values, function(err) {
+        if (err) reject(err);
+        else resolve({ affectedRows: this.changes });
+      });
+    });
+  },
+};
+
 // Server state cache model functions
 const ServerState = {
   findOne: (query) => {
@@ -597,4 +707,13 @@ const BoosterPremium = {
   },
 };
 
-module.exports = { db, User, PendingUser, StickyMessage, ServerWebhook, ServerState, BoosterPremium };
+module.exports = {
+  db,
+  User,
+  PendingUser,
+  StickyMessage,
+  ServerWebhook,
+  CustomDomain,
+  ServerState,
+  BoosterPremium,
+};

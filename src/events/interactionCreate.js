@@ -77,7 +77,7 @@ module.exports = async (client, interaction) => {
     }
 
     // Defer based on command preference
-    const ephemeralCommands = ['register', 'webhook'];
+    const ephemeralCommands = ['register', 'webhook', 'customdomain'];
     const shouldDeferEphemeral = inGuild && ephemeralCommands.includes(command.name);
     
     try {

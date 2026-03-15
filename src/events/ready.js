@@ -276,16 +276,6 @@ function isDownState(state) {
   return state === "offline" || state === "stopped";
 }
 
-function applyTemplate(template, data) {
-  return String(template || "")
-    .replace(/\{server\}/gi, data.serverName)
-    .replace(/\{id\}/gi, data.serverIdentifier)
-    .replace(/\{from\}/gi, data.fromState)
-    .replace(/\{to\}/gi, data.toState)
-    .replace(/\{state\}/gi, data.toState)
-    .replace(/\{node\}/gi, data.nodeName);
-}
-
 function buildWebhookPayload(server, fromState, toState, options = {}) {
   const fromLabel = fromState || "unknown";
   const toLabel = toState || "unknown";
@@ -297,21 +287,9 @@ function buildWebhookPayload(server, fromState, toState, options = {}) {
       : "Server status changed";
   const color = isUpState(normalizedTo) ? 0x2ecc71 : isDownState(normalizedTo) ? 0xe74c3c : 0xf1c40f;
 
-  const templateData = {
-    serverName: server.name,
-    serverIdentifier: server.identifier,
-    fromState: fromLabel,
-    toState: toLabel,
-    nodeName: server.nodeName || "Unknown",
-  };
-  const content = options.messageTemplate
-    ? applyTemplate(options.messageTemplate, templateData)
-    : `Server **${server.name}** changed: \`${fromLabel}\` → \`${toLabel}\``;
-
   return {
-    username: options.defaultName,
-    avatar_url: options.defaultAvatarUrl,
-    content,
+    username: options.webhookName || options.defaultName,
+    avatar_url: options.webhookAvatarUrl || options.defaultAvatarUrl,
     embeds: [
       {
         title,
@@ -386,7 +364,8 @@ async function notifyWebhookSubscriptions(client, serverStatuses) {
       const results = await Promise.allSettled(
         subs.map((sub) => {
           const payload = buildWebhookPayload(server, previous, currentState, {
-            messageTemplate: sub.messageTemplate,
+            webhookName: sub.webhookName,
+            webhookAvatarUrl: sub.webhookAvatarUrl,
             defaultName: client.user?.username,
             defaultAvatarUrl: client.user?.displayAvatarURL(),
           });

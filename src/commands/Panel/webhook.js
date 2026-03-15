@@ -67,8 +67,14 @@ module.exports = {
           required: true,
         },
         {
-          name: "message",
-          description: "Custom message (optional). Use {server}, {id}, {from}, {to}, {node}",
+          name: "name",
+          description: "Optional webhook name (use default/reset/clear to reset)",
+          type: ApplicationCommandOptionType.String,
+          required: false,
+        },
+        {
+          name: "avatar",
+          description: "Optional webhook avatar URL (use default/reset/clear to reset)",
           type: ApplicationCommandOptionType.String,
           required: false,
         },
@@ -158,10 +164,9 @@ module.exports = {
           );
         }
 
-        const lines = subs.slice(0, 20).map((sub) => {
-          const templateLabel = sub.messageTemplate ? "custom msg" : "default msg";
-          return `• \`${sub.serverIdentifier}\` → ${maskWebhookUrl(sub.webhookUrl)} (${templateLabel})`;
-        });
+        const lines = subs
+          .slice(0, 20)
+          .map((sub) => `• \`${sub.serverIdentifier}\` → ${maskWebhookUrl(sub.webhookUrl)}`);
         const extra = subs.length > 20 ? `\n…and ${subs.length - 20} more.` : "";
         return context.createMessage(
           buildServerCard({
@@ -185,9 +190,12 @@ module.exports = {
 
       if (subcommand === "set") {
         const url = String(context.options.getString("url") || "").trim();
-        const rawMessage = context.options.getString("message");
-        const message = rawMessage ? String(rawMessage).trim() : null;
-        const shouldClearMessage = message && ["default", "reset", "clear"].includes(message.toLowerCase());
+        const rawName = context.options.getString("name");
+        const name = rawName ? String(rawName).trim() : null;
+        const shouldClearName = name && ["default", "reset", "clear"].includes(name.toLowerCase());
+        const rawAvatar = context.options.getString("avatar");
+        const avatar = rawAvatar ? String(rawAvatar).trim() : null;
+        const shouldClearAvatar = avatar && ["default", "reset", "clear"].includes(avatar.toLowerCase());
         if (!WEBHOOK_URL_RE.test(url)) {
           return context.createMessage(
             buildServerCard({
@@ -206,9 +214,9 @@ module.exports = {
           discordId,
           serverIdentifier: identifier,
           webhookUrl: url,
-          messageTemplate: shouldClearMessage
-            ? null
-            : (message ?? existing?.messageTemplate ?? null),
+          messageTemplate: null,
+          webhookName: shouldClearName ? null : (name ?? existing?.webhookName ?? null),
+          webhookAvatarUrl: shouldClearAvatar ? null : (avatar ?? existing?.webhookAvatarUrl ?? null),
           createdAt: existing?.createdAt || Date.now(),
           updatedAt: Date.now(),
         });
@@ -217,10 +225,7 @@ module.exports = {
           buildServerCard({
             title: "Webhook set",
             description:
-              `We'll notify this webhook when **${owned.attributes.name}** changes state.` +
-              (shouldClearMessage
-                ? "\nMessage template reset to default."
-                : (message ? "\nCustom message saved." : "")),
+              `We'll notify this webhook when **${owned.attributes.name}** changes state.`,
           })
         );
       }

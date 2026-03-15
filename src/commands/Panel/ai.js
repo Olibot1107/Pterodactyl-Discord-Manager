@@ -329,7 +329,10 @@ const TOOL_DEFS = [
   {
     name: "propose_write",
     description: "Propose writing or creating a file; must be approved by the user.",
-    args: { path: "string (file path)", content: "string (full file contents)" },
+    args: {
+      path: "string (file path)",
+      content_b64: "string (base64-encoded full file contents)",
+    },
   },
 ];
 
@@ -342,12 +345,15 @@ function buildToolPrompt() {
   });
 
   return [
-    "You can request tools by returning JSON only.",
+    "You can request tools by returning JSON only (no extra text).",
     "If you need a tool, respond with:",
     '{"action":"tool","name":"<tool_name>","args":{...}}',
     "If you are ready to answer, respond with:",
     '{"action":"final","content":"..."}',
     "Paths are server file paths (often under /home/container).",
+    "For propose_write, you MUST provide content_b64 (base64 of the full file contents).",
+    "Example propose_write:",
+    '{"action":"tool","name":"propose_write","args":{"path":"/home/container/server.js","content_b64":"Y29uc29sZS5sb2coIkhlbGxvIFdvcmxkIik7"}}',
     "Only use the tools listed below.",
     "Tools:",
     ...lines,
@@ -409,9 +415,15 @@ async function runTool(session, tool) {
     }
     case "propose_write": {
       const filePath = tool.args?.path;
-      const content = tool.args?.content;
-      if (!filePath || typeof content !== "string") {
-        throw new Error("propose_write requires path and content.");
+      const contentB64 = tool.args?.content_b64;
+      if (!filePath || typeof contentB64 !== "string") {
+        throw new Error("propose_write requires path and content_b64.");
+      }
+      let content = "";
+      try {
+        content = Buffer.from(contentB64, "base64").toString("utf8");
+      } catch (err) {
+        throw new Error("propose_write content_b64 must be valid base64.");
       }
       return { path: filePath, content };
     }
@@ -628,6 +640,8 @@ module.exports = {
           "You are a concise technical support assistant for Pterodactyl servers.",
           "Use tools to read files or console output when needed.",
           "If you want to write or create a file, call propose_write and wait for approval.",
+          "Return JSON only. Do not include any extra commentary outside JSON.",
+          "Ensure the JSON is valid. Use content_b64 for propose_write to avoid escaping issues.",
           buildToolPrompt(),
         ].join("\n\n");
 

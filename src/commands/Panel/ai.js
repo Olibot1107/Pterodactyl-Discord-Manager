@@ -232,17 +232,49 @@ async function callAi(prompt) {
     );
   }
 
-  const content = res.data?.choices?.[0]?.message?.content
-    || res.data?.message?.content
-    || res.data?.output_text
-    || res.data?.response?.output_text
-    || "";
+  const content = extractAiContent(res.data);
 
   if (!content) {
     throw new Error("AI returned an empty response.");
   }
 
   return content;
+}
+
+function extractAiContent(payload) {
+  if (!payload) return "";
+
+  const choice = payload?.choices?.[0];
+  if (choice?.message?.content !== undefined) {
+    const content = choice.message.content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (!part) return "";
+          if (typeof part === "string") return part;
+          return part.text || part.content || "";
+        })
+        .filter(Boolean)
+        .join("");
+    }
+    if (typeof content === "string") return content;
+  }
+
+  if (typeof choice?.text === "string") return choice.text;
+  if (typeof payload?.message?.content === "string") return payload.message.content;
+  if (Array.isArray(payload?.message?.content)) {
+    return payload.message.content
+      .map((part) => (typeof part === "string" ? part : part?.text || part?.content || ""))
+      .filter(Boolean)
+      .join("");
+  }
+  if (typeof payload?.content === "string") return payload.content;
+  if (typeof payload?.completion === "string") return payload.completion;
+  if (typeof payload?.generated_text === "string") return payload.generated_text;
+  if (typeof payload?.output_text === "string") return payload.output_text;
+  if (typeof payload?.response?.output_text === "string") return payload.response.output_text;
+
+  return "";
 }
 
 module.exports = {

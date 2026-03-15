@@ -301,7 +301,7 @@ module.exports = {
 
         const lines = rows.slice(0, 20).map((row) => {
           const port = row.port ? `:${row.port}` : "";
-          return `- \\`${row.domain}\\` -> \\`${row.serverIdentifier}\\`${port} (target: ${row.target})`;
+          return `- \`${row.domain}\` -> \`${row.serverIdentifier}\`${port} (target: ${row.target})`;
         });
         const extra = rows.length > 20 ? `\n...and ${rows.length - 20} more.` : "";
         return context.createMessage(

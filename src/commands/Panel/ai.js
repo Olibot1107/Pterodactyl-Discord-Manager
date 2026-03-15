@@ -170,14 +170,14 @@ function buildNeedsServerCard() {
 }
 
 function getAiConfig() {
-  const provider = (process.env.AI_PROVIDER || aiSettings?.provider || "openai").toLowerCase();
+  const provider = (process.env.AI_PROVIDER || aiSettings?.provider || "llama").toLowerCase();
   const apiKey = process.env.OPENAI_API_KEY || aiSettings?.apiKey;
-  const model = process.env.AI_MODEL || aiSettings?.model || "gpt-4o-mini";
+  const model = process.env.AI_MODEL || aiSettings?.model || "Llama-4-Maverick-17B-128E-Instruct-FP8";
   const endpoint =
     aiSettings?.endpoint ||
     (provider === "ollama"
       ? "http://127.0.0.1:11434/api/chat"
-      : "https://api.openai.com/v1/chat/completions");
+      : "https://api.llama.com/v1/chat/completions");
   const maxTokens = Number(aiSettings?.maxOutputTokens) || 500;
   return { provider, apiKey, model, endpoint, maxTokens };
 }

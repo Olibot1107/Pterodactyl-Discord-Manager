@@ -407,6 +407,15 @@ function parseAiAction(raw) {
   return { type: "final", content: text };
 }
 
+function isLikelyToolAttempt(text) {
+  const raw = String(text || "").trim();
+  const lower = raw.toLowerCase();
+  if (lower.includes("content_b64")) return true;
+  if (lower.includes("\"action\"")) return true;
+  if (lower.includes("\"path\"") && lower.includes("{")) return true;
+  return false;
+}
+
 async function runTool(session, tool) {
   switch (tool.name) {
     case "list_files": {
@@ -702,9 +711,25 @@ module.exports = {
 
         let finalAnswer = "";
 
-        for (let i = 0; i < 4; i += 1) {
+        for (let i = 0; i < 5; i += 1) {
           const raw = await callAi(messages);
           const action = parseAiAction(raw);
+
+          const trimmed = String(raw || "").trim();
+          const looksJsonish =
+            trimmed.startsWith("{") ||
+            trimmed.startsWith("```") ||
+            (trimmed.includes("{") && trimmed.includes("}"));
+          if (action.type === "final" && (isLikelyToolAttempt(raw) || looksJsonish)) {
+            messages.push({ role: "assistant", content: raw });
+            messages.push({
+              role: "user",
+              content:
+                "Invalid response. Return ONLY valid JSON with action=tool or action=final. " +
+                "If using propose_write or propose_write_batch, include content_b64 (base64) and no raw quotes.",
+            });
+            continue;
+          }
 
           if (action.type === "tool") {
             if (action.name === "propose_write" || action.name === "propose_write_batch") {

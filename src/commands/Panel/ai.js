@@ -103,6 +103,33 @@ function normalizeServerPath(inputPath) {
   return path;
 }
 
+function isValidBase64(value) {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (trimmed.length % 4 !== 0) return false;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) return false;
+  return true;
+}
+
+function isMostlyReadableText(text) {
+  if (!text) return false;
+  const total = text.length;
+  if (total === 0) return false;
+  const printable = text.split("").filter((ch) => {
+    const code = ch.charCodeAt(0);
+    return (
+      ch === "\n" ||
+      ch === "\r" ||
+      ch === "\t" ||
+      (code >= 32 && code <= 126)
+    );
+  }).length;
+  const ratio = printable / total;
+  const replacementCount = (text.match(/\uFFFD/g) || []).length;
+  return ratio >= 0.9 && replacementCount === 0;
+}
+
 async function readServerFile(identifier, filePath) {
   const normalized = normalizeServerPath(filePath);
   const path = `/servers/${identifier}/files/contents?file=${encodeURIComponent(normalized)}`;
@@ -345,14 +372,14 @@ const TOOL_DEFS = [
     description: "Propose writing or creating a file; must be approved by the user.",
     args: {
       path: "string (file path)",
-      content_b64: "string (base64-encoded full file contents)",
+      content_b64: "string (base64-encoded UTF-8 text contents)",
     },
   },
   {
     name: "propose_write_batch",
     description: "Propose writing or creating multiple files; must be approved by the user.",
     args: {
-      files: "array of { path: string, content_b64: string }",
+      files: "array of { path: string, content_b64: string (base64-encoded UTF-8 text) }",
     },
   },
 ];
@@ -372,7 +399,7 @@ function buildToolPrompt() {
     "If you are ready to answer, respond with:",
     '{"action":"final","content":"..."}',
     "Paths are server-root paths (start with /). Do NOT prefix /home/container.",
-    "For propose_write, you MUST provide content_b64 (base64 of the full file contents).",
+    "For propose_write, you MUST provide content_b64 (base64 of UTF-8 text).",
     "Example propose_write:",
     '{"action":"tool","name":"propose_write","args":{"path":"/home/container/server.js","content_b64":"Y29uc29sZS5sb2coIkhlbGxvIFdvcmxkIik7"}}',
     "For propose_write_batch, provide files[] with base64 contents.",
@@ -450,11 +477,17 @@ async function runTool(session, tool) {
       if (!filePath || typeof contentB64 !== "string") {
         throw new Error("propose_write requires path and content_b64.");
       }
+      if (!isValidBase64(contentB64)) {
+        throw new Error("propose_write content_b64 must be valid base64.");
+      }
       let content = "";
       try {
         content = Buffer.from(contentB64, "base64").toString("utf8");
       } catch (err) {
         throw new Error("propose_write content_b64 must be valid base64.");
+      }
+      if (!isMostlyReadableText(content)) {
+        throw new Error("propose_write content must be UTF-8 text.");
       }
       return { files: [{ path: normalizeServerPath(filePath), content }] };
     }
@@ -467,11 +500,17 @@ async function runTool(session, tool) {
         if (!item?.path || typeof item?.content_b64 !== "string") {
           throw new Error("Each file needs path and content_b64.");
         }
+        if (!isValidBase64(item.content_b64)) {
+          throw new Error("Invalid base64 in propose_write_batch.");
+        }
         let content = "";
         try {
           content = Buffer.from(item.content_b64, "base64").toString("utf8");
         } catch (err) {
           throw new Error("Invalid base64 in propose_write_batch.");
+        }
+        if (!isMostlyReadableText(content)) {
+          throw new Error("propose_write_batch content must be UTF-8 text.");
         }
         return { path: normalizeServerPath(item.path), content };
       });
@@ -733,7 +772,19 @@ module.exports = {
 
           if (action.type === "tool") {
             if (action.name === "propose_write" || action.name === "propose_write_batch") {
-              const proposal = await runTool(session, action);
+              let proposal;
+              try {
+                proposal = await runTool(session, action);
+              } catch (err) {
+                messages.push({ role: "assistant", content: raw });
+                messages.push({
+                  role: "user",
+                  content:
+                    `Tool error: ${err.message}. ` +
+                    "Return ONLY valid JSON. For propose_write(_batch), provide content_b64 as base64 of UTF-8 text.",
+                });
+                continue;
+              }
               await requestWriteApproval({
                 client,
                 context,
@@ -743,7 +794,17 @@ module.exports = {
               return;
             }
 
-            const result = await runTool(session, action);
+            let result;
+            try {
+              result = await runTool(session, action);
+            } catch (err) {
+              messages.push({ role: "assistant", content: raw });
+              messages.push({
+                role: "user",
+                content: `Tool error: ${err.message}. Fix your tool call and return valid JSON.`,
+              });
+              continue;
+            }
             const resultText = truncateText(JSON.stringify(result, null, 2), MAX_PROMPT_CHARS);
             messages.push({ role: "assistant", content: raw });
             messages.push({

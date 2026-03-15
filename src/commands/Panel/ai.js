@@ -91,20 +91,34 @@ function formatFileSize(bytes) {
   return `${Math.round(value / (1024 * 1024))}MB`;
 }
 
+function normalizeServerPath(inputPath) {
+  if (!inputPath) return "/";
+  let path = String(inputPath).trim();
+  if (path.startsWith("/home/container")) {
+    path = path.slice("/home/container".length);
+  }
+  if (!path.startsWith("/")) {
+    path = `/${path}`;
+  }
+  return path;
+}
+
 async function readServerFile(identifier, filePath) {
-  const path = `/servers/${identifier}/files/contents?file=${encodeURIComponent(filePath)}`;
+  const normalized = normalizeServerPath(filePath);
+  const path = `/servers/${identifier}/files/contents?file=${encodeURIComponent(normalized)}`;
   const res = await clientApiRequest("GET", path);
   return typeof res.data === "string" ? res.data : JSON.stringify(res.data, null, 2);
 }
 
 async function listServerFiles(identifier, directory) {
-  const dir = directory || "/";
+  const dir = normalizeServerPath(directory || "/");
   const path = `/servers/${identifier}/files/list?directory=${encodeURIComponent(dir)}`;
   const res = await clientApiRequest("GET", path);
   return res.data?.data || [];
 }
 
 async function writeServerFile(identifier, filePath, content) {
+  const normalized = normalizeServerPath(filePath);
   const keys = getClientApiKeys();
   let lastError;
 
@@ -112,7 +126,7 @@ async function writeServerFile(identifier, filePath, content) {
     try {
       return await axios({
         method: "POST",
-        url: `${ptero.url}/api/client/servers/${identifier}/files/write?file=${encodeURIComponent(filePath)}`,
+        url: `${ptero.url}/api/client/servers/${identifier}/files/write?file=${encodeURIComponent(normalized)}`,
         data: content,
         headers: {
           Authorization: `Bearer ${key}`,
@@ -334,6 +348,13 @@ const TOOL_DEFS = [
       content_b64: "string (base64-encoded full file contents)",
     },
   },
+  {
+    name: "propose_write_batch",
+    description: "Propose writing or creating multiple files; must be approved by the user.",
+    args: {
+      files: "array of { path: string, content_b64: string }",
+    },
+  },
 ];
 
 function buildToolPrompt() {
@@ -350,10 +371,11 @@ function buildToolPrompt() {
     '{"action":"tool","name":"<tool_name>","args":{...}}',
     "If you are ready to answer, respond with:",
     '{"action":"final","content":"..."}',
-    "Paths are server file paths (often under /home/container).",
+    "Paths are server-root paths (start with /). Do NOT prefix /home/container.",
     "For propose_write, you MUST provide content_b64 (base64 of the full file contents).",
     "Example propose_write:",
     '{"action":"tool","name":"propose_write","args":{"path":"/home/container/server.js","content_b64":"Y29uc29sZS5sb2coIkhlbGxvIFdvcmxkIik7"}}',
+    "For propose_write_batch, provide files[] with base64 contents.",
     "Only use the tools listed below.",
     "Tools:",
     ...lines,
@@ -425,30 +447,53 @@ async function runTool(session, tool) {
       } catch (err) {
         throw new Error("propose_write content_b64 must be valid base64.");
       }
-      return { path: filePath, content };
+      return { files: [{ path: normalizeServerPath(filePath), content }] };
+    }
+    case "propose_write_batch": {
+      const files = Array.isArray(tool.args?.files) ? tool.args.files : null;
+      if (!files || !files.length) {
+        throw new Error("propose_write_batch requires files[].");
+      }
+      const decoded = files.map((item) => {
+        if (!item?.path || typeof item?.content_b64 !== "string") {
+          throw new Error("Each file needs path and content_b64.");
+        }
+        let content = "";
+        try {
+          content = Buffer.from(item.content_b64, "base64").toString("utf8");
+        } catch (err) {
+          throw new Error("Invalid base64 in propose_write_batch.");
+        }
+        return { path: normalizeServerPath(item.path), content };
+      });
+      return { files: decoded };
     }
     default:
       throw new Error(`Unknown tool: ${tool.name}`);
   }
 }
 
-function buildWriteApprovalCard(path, content) {
-  const preview = truncateText(content, MAX_TEXT_CHARS);
+function buildWriteApprovalCard(files) {
+  const previewLines = files.map((file) => {
+    const preview = truncateText(file.content, 600);
+    const safePreview = preview.replace(/```/g, "````");
+    return `File: \`${file.path}\`\n\`\`\`txt\n${safePreview}\n\`\`\``;
+  });
+
   return buildServerCard({
     title: "Approve file write?",
-    description: `File: \`${path}\``,
-    details: [`\`\`\`txt\n${preview.replace(/```/g, "````")}\n\`\`\``],
+    description: `Files: ${files.length}`,
+    details: previewLines,
     buttonDivider: true,
   });
 }
 
-async function requestWriteApproval({ client, context, session, path, content }) {
+async function requestWriteApproval({ client, context, session, files }) {
   const requestId = `ai-write-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   pendingWrites.set(requestId, {
     discordId: context.user.id,
     session,
-    path,
-    content,
+    files,
     createdAt: Date.now(),
   });
 
@@ -461,7 +506,7 @@ async function requestWriteApproval({ client, context, session, path, content })
     .setStyle(ButtonStyle.Danger)
     .setLabel("Deny");
 
-  const payload = buildWriteApprovalCard(path, content);
+  const payload = buildWriteApprovalCard(files);
   const container = payload.components?.[0];
   if (container?.addActionRowComponents) {
     container.addActionRowComponents(
@@ -495,11 +540,13 @@ async function requestWriteApproval({ client, context, session, path, content })
 
     if (action === "approve") {
       try {
-        await writeServerFile(pending.session.identifier, pending.path, pending.content);
+        for (const file of pending.files) {
+          await writeServerFile(pending.session.identifier, file.path, file.content);
+        }
         await interaction.update(
           buildServerCard({
             title: "File written",
-            description: `Saved \`${pending.path}\` on **${pending.session.name}**.`,
+            description: `Saved ${pending.files.length} file(s) on **${pending.session.name}**.`,
           })
         );
       } catch (err) {
@@ -660,14 +707,13 @@ module.exports = {
           const action = parseAiAction(raw);
 
           if (action.type === "tool") {
-            if (action.name === "propose_write") {
+            if (action.name === "propose_write" || action.name === "propose_write_batch") {
               const proposal = await runTool(session, action);
               await requestWriteApproval({
                 client,
                 context,
                 session,
-                path: proposal.path,
-                content: proposal.content,
+                files: proposal.files,
               });
               return;
             }

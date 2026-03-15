@@ -1,4 +1,5 @@
 const { ApplicationCommandOptionType, PermissionFlagsBits } = require("discord.js");
+const axios = require("axios");
 const api = require("../../structures/Ptero");
 const User = require("../../models/User");
 const ServerWebhook = require("../../models/ServerWebhook");
@@ -6,6 +7,7 @@ const { buildServerCard } = require("../../structures/serverCommandUi");
 const { adminid } = require("../../../settings");
 
 const WEBHOOK_URL_RE = /^https?:\/\/(canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+/i;
+const WEBHOOK_SEND_TIMEOUT_MS = 5_000;
 
 function maskWebhookUrl(url) {
   if (!url) return "hidden";
@@ -210,22 +212,52 @@ module.exports = {
           serverIdentifier: identifier,
         });
 
+        const nextWebhookName = shouldClearName ? null : (name ?? existing?.webhookName ?? null);
+        const nextWebhookAvatarUrl = shouldClearAvatar
+          ? null
+          : (avatar ?? existing?.webhookAvatarUrl ?? null);
+
         await ServerWebhook.upsert({
           discordId,
           serverIdentifier: identifier,
           webhookUrl: url,
           messageTemplate: null,
-          webhookName: shouldClearName ? null : (name ?? existing?.webhookName ?? null),
-          webhookAvatarUrl: shouldClearAvatar ? null : (avatar ?? existing?.webhookAvatarUrl ?? null),
+          webhookName: nextWebhookName,
+          webhookAvatarUrl: nextWebhookAvatarUrl,
           createdAt: existing?.createdAt || Date.now(),
           updatedAt: Date.now(),
         });
+
+        let linkNotice = "";
+        try {
+          const payload = {
+            embeds: [
+              {
+                title: "Webhook linked",
+                description: `This webhook is now linked to **${owned.attributes.name}**.`,
+                color: 0x2b8a3e,
+                timestamp: new Date().toISOString(),
+              },
+            ],
+          };
+          if (nextWebhookName) payload.username = nextWebhookName;
+          if (nextWebhookAvatarUrl) payload.avatar_url = nextWebhookAvatarUrl;
+          const result = await axios.post(url, payload, {
+            timeout: WEBHOOK_SEND_TIMEOUT_MS,
+            validateStatus: () => true,
+          });
+          if (!result || result.status >= 400) {
+            linkNotice = "\nTest message failed to send. Check the webhook URL and permissions.";
+          }
+        } catch (err) {
+          linkNotice = "\nTest message failed to send. Check the webhook URL and permissions.";
+        }
 
         return context.createMessage(
           buildServerCard({
             title: "Webhook set",
             description:
-              `We'll notify this webhook when **${owned.attributes.name}** changes state.`,
+              `We'll notify this webhook when **${owned.attributes.name}** changes state.` + linkNotice,
           })
         );
       }

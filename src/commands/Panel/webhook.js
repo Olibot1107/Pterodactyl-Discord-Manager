@@ -37,6 +37,26 @@ function hasAdminAccess(actor) {
   );
 }
 
+function resolveServerSelection(serverPool, rawSelection) {
+  const input = String(rawSelection || "").trim();
+  if (!input) return null;
+
+  let match = serverPool.find((s) => s.attributes.identifier === input);
+  if (match) return match;
+
+  const idMatch = input.match(/\(([^)]+)\)\s*$/);
+  if (idMatch?.[1]) {
+    match = serverPool.find((s) => s.attributes.identifier === idMatch[1]);
+    if (match) return match;
+  }
+
+  const lower = input.toLowerCase();
+  match = serverPool.find((s) => String(s.attributes.name || "").toLowerCase() === lower);
+  if (match) return match;
+
+  return serverPool.find((s) => String(s.attributes.name || "").toLowerCase().includes(lower)) || null;
+}
+
 async function getUserAndOwnedServers(discordId) {
   const user = await User.findOne({ discordId });
   if (!user) return { user: null, ownedServers: [] };
@@ -136,7 +156,7 @@ module.exports = {
   run: async ({ context }) => {
     const discordId = context.user.id;
     const subcommand = context.options.getSubcommand();
-    const identifier = context.options.getString("server");
+    const selection = context.options.getString("server");
 
     try {
       let serverPool = [];
@@ -178,7 +198,7 @@ module.exports = {
         );
       }
 
-      const owned = serverPool.find((s) => s.attributes.identifier === identifier);
+      const owned = resolveServerSelection(serverPool, selection);
       if (!owned) {
         return context.createMessage(
           buildServerCard({
@@ -189,6 +209,8 @@ module.exports = {
           })
         );
       }
+
+      const identifier = owned.attributes.identifier;
 
       if (subcommand === "set") {
         const url = String(context.options.getString("url") || "").trim();

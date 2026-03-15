@@ -1,4 +1,10 @@
-const { ApplicationCommandOptionType } = require("discord.js");
+const {
+  ActionRowBuilder,
+  ApplicationCommandOptionType,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+} = require("discord.js");
 const axios = require("axios");
 const api = require("../../structures/Ptero");
 const User = require("../../models/User");
@@ -10,6 +16,8 @@ const MAX_LIST_ITEMS = 25;
 const MAX_TEXT_CHARS = 1800;
 const MAX_PROMPT_CHARS = 4000;
 const CONSOLE_CAPTURE_MS = 1500;
+const WRITE_PERMISSION_MS = 10 * 60 * 1000;
+const pendingWrites = new Map();
 
 function truncateText(value, max = MAX_TEXT_CHARS) {
   if (!value) return "";
@@ -94,6 +102,36 @@ async function listServerFiles(identifier, directory) {
   const path = `/servers/${identifier}/files/list?directory=${encodeURIComponent(dir)}`;
   const res = await clientApiRequest("GET", path);
   return res.data?.data || [];
+}
+
+async function writeServerFile(identifier, filePath, content) {
+  const keys = getClientApiKeys();
+  let lastError;
+
+  for (const key of keys) {
+    try {
+      return await axios({
+        method: "POST",
+        url: `${ptero.url}/api/client/servers/${identifier}/files/write?file=${encodeURIComponent(filePath)}`,
+        data: content,
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "text/plain",
+          Accept: "application/json",
+        },
+      });
+    } catch (err) {
+      lastError = err;
+      const message = String(err.response?.data?.errors?.[0]?.detail || "");
+      const isWrongKeyType =
+        err.response?.status === 403 &&
+        message.includes("requires a client API key");
+
+      if (!isWrongKeyType) break;
+    }
+  }
+
+  throw lastError;
 }
 
 function getWebSocketImpl() {
@@ -182,19 +220,8 @@ function getAiConfig() {
   return { provider, apiKey, model, endpoint, maxTokens };
 }
 
-async function callAi(prompt) {
+async function callAi(messages) {
   const { provider, apiKey, model, endpoint, maxTokens } = getAiConfig();
-
-  const messages = [
-    {
-      role: "system",
-      content: "You are a concise technical support assistant for Pterodactyl servers. Provide troubleshooting steps and propose minimal code edits when needed.",
-    },
-    {
-      role: "user",
-      content: prompt,
-    },
-  ];
 
   let res;
   if (provider === "ollama") {
@@ -283,6 +310,209 @@ function extractAiContent(payload) {
   return "";
 }
 
+const TOOL_DEFS = [
+  {
+    name: "list_files",
+    description: "List files in a directory on the selected server.",
+    args: { path: "string (directory path, default /)" },
+  },
+  {
+    name: "read_file",
+    description: "Read the full contents of a file on the selected server.",
+    args: { path: "string (file path)" },
+  },
+  {
+    name: "read_console",
+    description: "Read recent console output; optionally run a command first.",
+    args: { command: "string (optional)" },
+  },
+  {
+    name: "propose_write",
+    description: "Propose writing or creating a file; must be approved by the user.",
+    args: { path: "string (file path)", content: "string (full file contents)" },
+  },
+];
+
+function buildToolPrompt() {
+  const lines = TOOL_DEFS.map((tool) => {
+    const args = Object.entries(tool.args)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(", ");
+    return `- ${tool.name}: ${tool.description} (args: ${args})`;
+  });
+
+  return [
+    "You can request tools by returning JSON only.",
+    "If you need a tool, respond with:",
+    '{"action":"tool","name":"<tool_name>","args":{...}}',
+    "If you are ready to answer, respond with:",
+    '{"action":"final","content":"..."}',
+    "Paths are server file paths (often under /home/container).",
+    "Only use the tools listed below.",
+    "Tools:",
+    ...lines,
+  ].join("\n");
+}
+
+function parseAiAction(raw) {
+  if (!raw) return { type: "final", content: "" };
+  const text = String(raw).trim();
+  const firstBrace = text.indexOf("{");
+  const lastBrace = text.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    return { type: "final", content: text };
+  }
+
+  const candidate = text.slice(firstBrace, lastBrace + 1);
+  try {
+    const parsed = JSON.parse(candidate);
+    if (parsed?.action === "tool" && parsed?.name) {
+      return { type: "tool", name: parsed.name, args: parsed.args || {} };
+    }
+    if (parsed?.action === "final") {
+      return { type: "final", content: parsed.content || "" };
+    }
+  } catch (err) {
+    // Fall through to treat as text.
+  }
+
+  return { type: "final", content: text };
+}
+
+async function runTool(session, tool) {
+  switch (tool.name) {
+    case "list_files": {
+      const directory = tool.args?.path || "/";
+      const files = await listServerFiles(session.identifier, directory);
+      return {
+        directory,
+        files: files.map((item) => {
+          const attrs = item.attributes || {};
+          return {
+            name: attrs.name,
+            isFile: Boolean(attrs.is_file),
+            size: attrs.size,
+          };
+        }),
+      };
+    }
+    case "read_file": {
+      const filePath = tool.args?.path;
+      if (!filePath) throw new Error("read_file requires a path.");
+      const content = await readServerFile(session.identifier, filePath);
+      return { path: filePath, content };
+    }
+    case "read_console": {
+      const command = tool.args?.command || "";
+      const output = await fetchConsoleOutput(session.identifier, command);
+      return { command, output };
+    }
+    case "propose_write": {
+      const filePath = tool.args?.path;
+      const content = tool.args?.content;
+      if (!filePath || typeof content !== "string") {
+        throw new Error("propose_write requires path and content.");
+      }
+      return { path: filePath, content };
+    }
+    default:
+      throw new Error(`Unknown tool: ${tool.name}`);
+  }
+}
+
+function buildWriteApprovalCard(path, content) {
+  const preview = truncateText(content, MAX_TEXT_CHARS);
+  return buildServerCard({
+    title: "Approve file write?",
+    description: `File: \\`${path}\\``,
+    details: [`\\`\\`\\`txt\\n${preview.replace(/```/g, \"````\")}\\n\\`\\`\\``],
+    buttonDivider: true,
+  });
+}
+
+async function requestWriteApproval({ client, context, session, path, content }) {
+  const requestId = `ai-write-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  pendingWrites.set(requestId, {
+    discordId: context.user.id,
+    session,
+    path,
+    content,
+    createdAt: Date.now(),
+  });
+
+  const approveButton = new ButtonBuilder()
+    .setCustomId(`${requestId}:approve`)
+    .setStyle(ButtonStyle.Success)
+    .setLabel("Approve write");
+  const denyButton = new ButtonBuilder()
+    .setCustomId(`${requestId}:deny`)
+    .setStyle(ButtonStyle.Danger)
+    .setLabel("Deny");
+
+  const payload = buildWriteApprovalCard(path, content);
+  const message = await context.createMessage({
+    ...payload,
+    components: [...payload.components, new ActionRowBuilder().addComponents(approveButton, denyButton)],
+  });
+
+  const collector = message.createMessageComponentCollector({
+    componentType: ComponentType.Button,
+    time: WRITE_PERMISSION_MS,
+  });
+
+  collector.on("collect", async (interaction) => {
+    const [id, action] = interaction.customId.split(":");
+    const pending = pendingWrites.get(id);
+
+    if (!pending) {
+      return interaction.reply({
+        content: "That request has expired.",
+        ephemeral: true,
+      });
+    }
+
+    if (interaction.user.id !== pending.discordId) {
+      return interaction.reply({
+        content: "Only the requester can approve this.",
+        ephemeral: true,
+      });
+    }
+
+    if (action === "approve") {
+      try {
+        await writeServerFile(pending.session.identifier, pending.path, pending.content);
+        await interaction.update(
+          buildServerCard({
+            title: "File written",
+            description: `Saved \\`${pending.path}\\` on **${pending.session.name}**.`,
+          })
+        );
+      } catch (err) {
+        await interaction.update(
+          buildServerCard({
+            title: "Write failed",
+            description: err.response?.data?.errors?.[0]?.detail || err.message || "Failed to write file.",
+          })
+        );
+      }
+    } else {
+      await interaction.update(
+        buildServerCard({
+          title: "Write cancelled",
+          description: "No changes were made.",
+        })
+      );
+    }
+
+    pendingWrites.delete(id);
+    collector.stop();
+  });
+
+  collector.on("end", () => {
+    pendingWrites.delete(requestId);
+  });
+}
+
 module.exports = {
   name: "ai",
   description: "AI assistant for server troubleshooting",
@@ -303,45 +533,6 @@ module.exports = {
       ],
     },
     {
-      name: "files",
-      description: "List files in a directory",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "path",
-          description: "Directory path (defaults to /)",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-        },
-      ],
-    },
-    {
-      name: "file",
-      description: "Read a file",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "path",
-          description: "File path",
-          type: ApplicationCommandOptionType.String,
-          required: true,
-        },
-      ],
-    },
-    {
-      name: "console",
-      description: "Capture console output (optionally run a command)",
-      type: ApplicationCommandOptionType.Subcommand,
-      options: [
-        {
-          name: "command",
-          description: "Command to send before capturing output",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-        },
-      ],
-    },
-    {
       name: "ask",
       description: "Ask the AI for help",
       type: ApplicationCommandOptionType.Subcommand,
@@ -351,18 +542,6 @@ module.exports = {
           description: "What do you need help with?",
           type: ApplicationCommandOptionType.String,
           required: true,
-        },
-        {
-          name: "file",
-          description: "Optional file to include",
-          type: ApplicationCommandOptionType.String,
-          required: false,
-        },
-        {
-          name: "console",
-          description: "Include recent console output",
-          type: ApplicationCommandOptionType.Boolean,
-          required: false,
         },
       ],
     },
@@ -394,7 +573,7 @@ module.exports = {
     }
   },
 
-  run: async ({ context }) => {
+  run: async ({ client, context }) => {
     const discordId = context.user.id;
     const subcommand = context.options.getSubcommand();
 
@@ -440,102 +619,57 @@ module.exports = {
         return context.createMessage(buildNeedsServerCard());
       }
 
-      if (subcommand === "files") {
-        const directory = context.options.getString("path") || "/";
-        const files = await listServerFiles(session.identifier, directory);
-
-        if (!files.length) {
-          return context.createMessage(
-            buildServerCard({
-              title: "No files",
-              description: `No files found in \`${directory}\`.`,
-            })
-          );
-        }
-
-        const lines = files.slice(0, MAX_LIST_ITEMS).map((item) => {
-          const attrs = item.attributes || {};
-          const label = attrs.is_file ? "FILE" : "DIR";
-          const suffix = attrs.is_file ? ` (${formatFileSize(attrs.size)})` : "";
-          return `${label} ${attrs.name}${suffix}`;
-        });
-
-        if (files.length > MAX_LIST_ITEMS) {
-          lines.push(`...and ${files.length - MAX_LIST_ITEMS} more`);
-        }
-
-        return context.createMessage(
-          buildServerCard({
-            title: "File list",
-            description: `Directory: \`${directory}\``,
-            details: lines,
-          })
-        );
-      }
-
-      if (subcommand === "file") {
-        const filePath = context.options.getString("path");
-        const content = await readServerFile(session.identifier, filePath);
-        const safeContent = truncateText(content);
-        const wrapped = `\`\`\`txt\n${safeContent.replace(/```/g, "````")}\n\`\`\``;
-
-        return context.createMessage(
-          buildServerCard({
-            title: "File contents",
-            description: `File: \`${filePath}\``,
-            details: [wrapped],
-          })
-        );
-      }
-
-      if (subcommand === "console") {
-        const command = context.options.getString("command") || "";
-        const output = await fetchConsoleOutput(session.identifier, command);
-        const safeOutput = truncateText(output || "(no output captured)");
-        const wrapped = `\`\`\`txt\n${safeOutput.replace(/```/g, "````")}\n\`\`\``;
-
-        return context.createMessage(
-          buildServerCard({
-            title: "Console output",
-            description: command ? `Command: \`${command}\`` : "Recent output",
-            details: [wrapped],
-          })
-        );
-      }
-
       if (subcommand === "ask") {
         const prompt = context.options.getString("prompt");
-        const filePath = context.options.getString("file");
-        const includeConsole = context.options.getBoolean("console") || false;
+        const systemContent = [
+          "You are a concise technical support assistant for Pterodactyl servers.",
+          "Use tools to read files or console output when needed.",
+          "If you want to write or create a file, call propose_write and wait for approval.",
+          buildToolPrompt(),
+        ].join("\n\n");
 
-        let fileSnippet = "";
-        if (filePath) {
-          const fileContent = await readServerFile(session.identifier, filePath);
-          fileSnippet = truncateText(fileContent, MAX_PROMPT_CHARS);
-        }
-
-        let consoleSnippet = "";
-        if (includeConsole) {
-          const output = await fetchConsoleOutput(session.identifier, "");
-          consoleSnippet = truncateText(output || "(no output captured)", MAX_PROMPT_CHARS);
-        }
-
-        const parts = [
-          `Server: ${session.name} (${session.identifier})`,
-          "",
-          `Question: ${prompt}`,
+        const messages = [
+          { role: "system", content: systemContent },
+          {
+            role: "user",
+            content: `Server: ${session.name} (${session.identifier})\nQuestion: ${prompt}`,
+          },
         ];
 
-        if (filePath) {
-          parts.push("", `File: ${filePath}`, fileSnippet || "(empty)");
+        let finalAnswer = "";
+
+        for (let i = 0; i < 4; i += 1) {
+          const raw = await callAi(messages);
+          const action = parseAiAction(raw);
+
+          if (action.type === "tool") {
+            if (action.name === "propose_write") {
+              const proposal = await runTool(session, action);
+              await requestWriteApproval({
+                client,
+                context,
+                session,
+                path: proposal.path,
+                content: proposal.content,
+              });
+              return;
+            }
+
+            const result = await runTool(session, action);
+            const resultText = truncateText(JSON.stringify(result, null, 2), MAX_PROMPT_CHARS);
+            messages.push({ role: "assistant", content: raw });
+            messages.push({
+              role: "user",
+              content: `Tool result (${action.name}):\n${resultText}`,
+            });
+            continue;
+          }
+
+          finalAnswer = action.content || raw || "";
+          break;
         }
 
-        if (includeConsole) {
-          parts.push("", "Console output:", consoleSnippet || "(empty)");
-        }
-
-        const aiResponse = await callAi(parts.join("\n"));
-        const safeResponse = truncateText(aiResponse, MAX_TEXT_CHARS);
+        const safeResponse = truncateText(finalAnswer || "No response returned.", MAX_TEXT_CHARS);
 
         return context.createMessage(
           buildServerCard({

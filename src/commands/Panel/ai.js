@@ -256,7 +256,9 @@ function getAiConfig() {
     aiSettings?.endpoint ||
     (provider === "ollama"
       ? "http://127.0.0.1:11434/api/chat"
-      : "https://api.llama.com/v1/chat/completions");
+      : provider === "groq"
+        ? "https://api.groq.com/openai/v1/chat/completions"
+        : "https://api.llama.com/v1/chat/completions");
   const maxTokens = Number(aiSettings?.maxOutputTokens) || 500;
   return { provider, apiKey, model, endpoint, maxTokens };
 }

@@ -268,6 +268,12 @@ function extractAiContent(payload) {
       .filter(Boolean)
       .join("");
   }
+  if (typeof payload?.completion_message?.content?.text === "string") {
+    return payload.completion_message.content.text;
+  }
+  if (typeof payload?.completion_message?.content === "string") {
+    return payload.completion_message.content;
+  }
   if (typeof payload?.content === "string") return payload.content;
   if (typeof payload?.completion === "string") return payload.completion;
   if (typeof payload?.generated_text === "string") return payload.generated_text;

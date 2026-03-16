@@ -25,6 +25,8 @@ const ACTION_LABELS = {
   kill: "Killed",
 };
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function formatBytesToMB(bytes) {
   const value = Number(bytes) || 0;
   return `${Math.max(0, Math.round(value / (1024 * 1024)))}MB`;
@@ -216,52 +218,64 @@ module.exports = {
 
         const allServers = await fetchAllServers();
         const signal = ADMIN_POWER_ACTIONS[subcommand];
-        let sent = 0;
-        let skipped = 0;
-        const failed = [];
-
         for (const server of allServers) {
+          const name = server.attributes.name;
+          const identifierForLog = server.attributes.identifier;
+
           if (server.attributes.suspended) {
-            skipped += 1;
+            await context.createMessage(
+              buildServerCard({
+                title: "✕ Action Blocked",
+                description: `**${name}** is suspended and cannot receive power actions.`,
+                details: [
+                  `├─ **Action:** ${signal}`,
+                  `└─ **Identifier:** ${identifierForLog}`,
+                ],
+              })
+            );
+            await sleep(250);
             continue;
           }
 
           try {
             await clientApiRequest(
               "POST",
-              `/servers/${server.attributes.identifier}/power`,
+              `/servers/${identifierForLog}/power`,
               { signal }
             );
-            sent += 1;
+            await context.createMessage(
+              buildServerCard({
+                title: `✔ Server ${ACTION_LABELS[signal]}`,
+                description: `Power action \`${signal}\` was sent to **${name}**.`,
+                details: [
+                  `├─ **Server:** ${name}`,
+                  `└─ **Identifier:** ${identifierForLog}`,
+                ],
+              })
+            );
           } catch (err) {
-            failed.push(server.attributes.name);
             console.error(
-              `All-server ${signal} failed for ${server.attributes.identifier}:`,
+              `All-server ${signal} failed for ${identifierForLog}:`,
               err.response?.data || err
             );
+            const detail = err.response?.data?.errors?.[0]?.detail;
+            await context.createMessage(
+              buildServerCard({
+                title: "✕ Command Failed",
+                description:
+                  detail || `Failed to send \`${signal}\` to **${name}**.`,
+                details: [
+                  `├─ **Server:** ${name}`,
+                  `└─ **Identifier:** ${identifierForLog}`,
+                ],
+              })
+            );
           }
+
+          await sleep(250);
         }
 
-        const detailLines = [
-          `├─ **Total:** ${allServers.length}`,
-          `├─ **Sent:** ${sent}`,
-          `├─ **Skipped (suspended):** ${skipped}`,
-          `└─ **Failed:** ${failed.length}`,
-        ];
-
-        if (failed.length) {
-          detailLines.push(
-            `   Failed servers: ${failed.slice(0, 5).join(", ")}${failed.length > 5 ? "…" : ""}`
-          );
-        }
-
-        return context.createMessage(
-          buildServerCard({
-            title: `✔ All Servers ${ACTION_LABELS[signal]}`,
-            description: `Power action \`${signal}\` was sent to all eligible servers.`,
-            details: detailLines,
-          })
-        );
+        return;
       }
 
       if (ADMIN_SUBCOMMANDS.has(subcommand)) {

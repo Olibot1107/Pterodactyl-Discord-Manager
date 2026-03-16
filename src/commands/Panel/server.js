@@ -11,6 +11,13 @@ const { ptero, adminid } = require("../../../settings");
 
 const POWER_SUBCOMMANDS = ["start", "stop", "restart", "kill"];
 const ADMIN_SUBCOMMANDS = new Set(["suspend", "unsuspend"]);
+const ADMIN_POWER_SUBCOMMANDS = ["allstart", "allstop", "allkill", "allreset"];
+const ADMIN_POWER_ACTIONS = {
+  allstart: "start",
+  allstop: "stop",
+  allkill: "kill",
+  allreset: "restart",
+};
 const ACTION_LABELS = {
   start: "Started",
   stop: "Stopped",
@@ -131,6 +138,15 @@ function buildCommandOptions() {
     ],
   });
 
+  for (const name of ADMIN_POWER_SUBCOMMANDS) {
+    const actionLabel = ADMIN_POWER_ACTIONS[name];
+    baseSubcommands.push({
+      name,
+      description: `${actionLabel[0].toUpperCase()}${actionLabel.slice(1)} every server (admin only)`,
+      type: ApplicationCommandOptionType.Subcommand,
+    });
+  }
+
   return baseSubcommands;
 }
 
@@ -188,6 +204,66 @@ module.exports = {
     const identifier = context.options.getString("server");
 
     try {
+      if (ADMIN_POWER_SUBCOMMANDS.includes(subcommand)) {
+        if (!hasAdminAccess(context)) {
+          return context.createMessage(
+            buildServerCard({
+              title: "✕ Permission Denied",
+              description: "Only admins can use the all-server power commands.",
+            })
+          );
+        }
+
+        const allServers = await fetchAllServers();
+        const signal = ADMIN_POWER_ACTIONS[subcommand];
+        let sent = 0;
+        let skipped = 0;
+        const failed = [];
+
+        for (const server of allServers) {
+          if (server.attributes.suspended) {
+            skipped += 1;
+            continue;
+          }
+
+          try {
+            await clientApiRequest(
+              "POST",
+              `/servers/${server.attributes.identifier}/power`,
+              { signal }
+            );
+            sent += 1;
+          } catch (err) {
+            failed.push(server.attributes.name);
+            console.error(
+              `All-server ${signal} failed for ${server.attributes.identifier}:`,
+              err.response?.data || err
+            );
+          }
+        }
+
+        const detailLines = [
+          `├─ **Total:** ${allServers.length}`,
+          `├─ **Sent:** ${sent}`,
+          `├─ **Skipped (suspended):** ${skipped}`,
+          `└─ **Failed:** ${failed.length}`,
+        ];
+
+        if (failed.length) {
+          detailLines.push(
+            `   Failed servers: ${failed.slice(0, 5).join(", ")}${failed.length > 5 ? "…" : ""}`
+          );
+        }
+
+        return context.createMessage(
+          buildServerCard({
+            title: `✔ All Servers ${ACTION_LABELS[signal]}`,
+            description: `Power action \`${signal}\` was sent to all eligible servers.`,
+            details: detailLines,
+          })
+        );
+      }
+
       if (ADMIN_SUBCOMMANDS.has(subcommand)) {
         if (!hasAdminAccess(context)) {
           return context.createMessage(

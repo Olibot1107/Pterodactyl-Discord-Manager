@@ -126,6 +126,17 @@ db.serialize(() => {
     );
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS boosterGrants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      discordId TEXT NOT NULL UNIQUE,
+      grantedBy TEXT NOT NULL,
+      expiresAt INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+  `);
+
   db.get(
     `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'stickyMessages'`,
     (schemaErr, schemaRow) => {
@@ -707,6 +718,80 @@ const BoosterPremium = {
   },
 };
 
+// Booster grant model functions
+const BoosterGrant = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM boosterGrants WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  findExpired: (timestamp) => {
+    return new Promise((resolve, reject) => {
+      db.all(
+        `SELECT * FROM boosterGrants WHERE expiresAt <= ?`,
+        [timestamp],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+  },
+
+  upsert: (data) => {
+    return new Promise((resolve, reject) => {
+      const now = data.updatedAt || Date.now();
+      db.run(
+        `
+          INSERT INTO boosterGrants (
+            discordId,
+            grantedBy,
+            expiresAt,
+            createdAt,
+            updatedAt
+          )
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(discordId)
+          DO UPDATE SET
+            grantedBy = excluded.grantedBy,
+            expiresAt = excluded.expiresAt,
+            updatedAt = excluded.updatedAt
+        `,
+        [
+          data.discordId,
+          data.grantedBy,
+          data.expiresAt,
+          data.createdAt || now,
+          now,
+        ],
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.run(`DELETE FROM boosterGrants WHERE ${whereClause}`, values, function(err) {
+        if (err) reject(err);
+        else resolve({ affectedRows: this.changes });
+      });
+    });
+  },
+};
+
 module.exports = {
   db,
   User,
@@ -716,4 +801,5 @@ module.exports = {
   CustomDomain,
   ServerState,
   BoosterPremium,
+  BoosterGrant,
 };

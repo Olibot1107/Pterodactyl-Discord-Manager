@@ -14,14 +14,18 @@ const api = require("../structures/Ptero");
 const { discord, ptero } = require("../../settings");
 const ServerWebhook = require("../models/ServerWebhook");
 const ServerState = require("../models/ServerState");
+const BoosterGrant = require("../models/BoosterGrant");
+const { revokeBoosterPerks } = require("../structures/boosterPerks");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
 const SERVER_ROLE_ID = discord.ServerRoleId;
 const GUILD_ID = discord.guildId;
+const BOOSTER_ROLE_ID = discord?.boosterRoleId || "1473717031202193408";
 const WHITELISTED_UUIDS = []; // Add your whitelisted server UUIDs here
 
 const ROLE_SYNC_INTERVAL_MS = 10 * 1000; // 15 minutes
 const STATUS_BOARD_INTERVAL_MS = 10 * 1000;
+const BOOSTER_GRANT_INTERVAL_MS = 60 * 1000;
 const STATUS_REQUEST_CONCURRENCY = 5;
 const SERVER_STATUS_CHANNEL_ID = "1473827081853861928";
 const STATUS_BOARD_FOOTER_MARKER = "Voidium status board";
@@ -137,6 +141,55 @@ function chunk(array, size) {
     chunks.push(array.slice(i, i + size));
   }
   return chunks;
+}
+
+async function expireTemporaryBoosters(client) {
+  const now = Date.now();
+  let expired = [];
+
+  try {
+    expired = await BoosterGrant.findExpired(now);
+  } catch (err) {
+    console.warn("[Booster] Failed to fetch expired booster grants:", err.message);
+    return;
+  }
+
+  if (!expired.length) return;
+
+  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
+  if (!guild) {
+    console.warn("[Booster] Guild not found; clearing expired booster grants.");
+    await Promise.all(expired.map((grant) => BoosterGrant.deleteOne({ discordId: grant.discordId })));
+    return;
+  }
+
+  for (const grant of expired) {
+    const member = await guild.members.fetch(grant.discordId).catch(() => null);
+    if (!member) {
+      await BoosterGrant.deleteOne({ discordId: grant.discordId });
+      continue;
+    }
+
+    if (member.premiumSince) {
+      await BoosterGrant.deleteOne({ discordId: grant.discordId });
+      continue;
+    }
+
+    try {
+      if (member.roles.cache.has(BOOSTER_ROLE_ID)) {
+        await member.roles.remove(BOOSTER_ROLE_ID);
+      }
+    } catch (err) {
+      console.warn(`[Booster] Failed to remove booster role for ${member.user.tag}:`, err.message);
+    }
+
+    await revokeBoosterPerks({
+      userId: member.user.id,
+      userTag: member.user.tag,
+    });
+
+    await BoosterGrant.deleteOne({ discordId: grant.discordId });
+  }
 }
 
 function truncate(text, maxLength) {
@@ -917,5 +970,9 @@ module.exports = async (client) => {
   // Run server status board immediately, then refresh every 10 seconds
   updateServerStatusBoard(client);
   setInterval(() => updateServerStatusBoard(client), STATUS_BOARD_INTERVAL_MS);
+
+  // Expire temporary booster grants
+  expireTemporaryBoosters(client);
+  setInterval(() => expireTemporaryBoosters(client), BOOSTER_GRANT_INTERVAL_MS);
 
 };

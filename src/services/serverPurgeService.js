@@ -55,7 +55,7 @@ function normalizeChildPath(base, child) {
 
 function computeNextRun(reference = new Date()) {
   const base = new Date(reference);
-  base.setHours(17, 30, 0, 0);
+  base.setHours(17, 36, 0, 0);
   if (base.getTime() <= reference.getTime()) {
     base.setDate(base.getDate() + 1);
   }
@@ -191,7 +191,7 @@ async function deleteEmptyServers() {
   for (const server of candidates) {
     const serverId = server?.attributes?.id || server?.id;
     try {
-      await api.delete(`/servers/${serverId}`);
+      // await api.delete(`/servers/${serverId}`);
       deleted.push(server);
     } catch (err) {
       console.warn(

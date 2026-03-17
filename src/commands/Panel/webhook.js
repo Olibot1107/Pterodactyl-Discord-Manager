@@ -1,10 +1,10 @@
 const { ApplicationCommandOptionType, PermissionFlagsBits } = require("discord.js");
 const axios = require("axios");
 const api = require("../../structures/Ptero");
-const User = require("../../models/User");
 const ServerWebhook = require("../../models/ServerWebhook");
 const { buildServerCard } = require("../../structures/serverCommandUi");
 const { adminid } = require("../../../settings");
+const userRegistry = require("../../services/userRegistry");
 
 const WEBHOOK_URL_RE = /^https?:\/\/(canary\.|ptb\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+/i;
 const WEBHOOK_SEND_TIMEOUT_MS = 5_000;
@@ -58,7 +58,7 @@ function resolveServerSelection(serverPool, rawSelection) {
 }
 
 async function getUserAndOwnedServers(discordId) {
-  const user = await User.findOne({ discordId });
+  const user = await userRegistry.getVerifiedUser(discordId);
   if (!user) return { user: null, ownedServers: [] };
 
   const allServers = await fetchAllServers();

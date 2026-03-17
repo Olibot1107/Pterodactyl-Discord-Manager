@@ -1,12 +1,13 @@
 const User = require("../models/User");
 const api = require("../structures/Ptero");
+const userRegistry = require("../services/userRegistry");
 
 module.exports = async (client, member) => {
   console.log(`[GuildMemberRemove] ${member.user.tag} left the server. Checking for linked panel account...`);
 
   try {
-    // Find the user in the database
-    const user = await User.findOne({ discordId: member.id });
+    // Find the user in the database and verify the stored panel ID still exists
+    const user = await userRegistry.getVerifiedUser(member.id);
     if (!user) {
       console.log(`[GuildMemberRemove] No panel account found for ${member.user.tag}.`);
       return;
@@ -38,6 +39,7 @@ module.exports = async (client, member) => {
 
     // Delete user from local database
     await User.deleteOne({ discordId: member.id });
+    userRegistry.clearCachedUser(member.id);
 
     console.log(`[GuildMemberRemove] Successfully deleted panel account and all servers for ${member.user.tag}`);
 

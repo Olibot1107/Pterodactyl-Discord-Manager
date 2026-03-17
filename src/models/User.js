@@ -19,6 +19,10 @@ class User {
     return await UserModel.deleteMany(query);
   }
   
+  static async updateOne(query, updates) {
+    return await UserModel.updateOne(query, updates);
+  }
+
   async save() {
     const result = await UserModel.create(this);
     Object.assign(this, result);

@@ -14,6 +14,7 @@ const { ptero } = require("../../../settings");
 const crypto = require("crypto");
 const sendEmail = require("../../structures/sendVerificationEmail");
 const { buildServerCard } = require("../../structures/serverCommandUi");
+const userRegistry = require("../../services/userRegistry");
 const { channel } = require("diagnostics_channel");
 
 // Cooldown tracking
@@ -50,21 +51,6 @@ function checkCooldown(discordId) {
 function setCooldown(discordId) {
   cooldowns.set(discordId, Date.now());
   setTimeout(() => cooldowns.delete(discordId), COOLDOWN_TIME);
-}
-
-async function cleanupStaleUser(discordId, pteroId) {
-  try {
-    const panelUser = await api.get(`/users/${pteroId}`);
-    if (panelUser?.data?.object === "user") return true;
-    await User.deleteOne({ discordId });
-    return false;
-  } catch (err) {
-    if (err.response?.status === 404) {
-      await User.deleteOne({ discordId });
-      return false;
-    }
-    throw err;
-  }
 }
 
 async function isEmailRegistered(email) {
@@ -124,18 +110,17 @@ module.exports = {
     }
 
     try {
-      const existing = await User.findOne({ discordId });
+      const existing = await userRegistry.getVerifiedUser(discordId, {
+        forceRefresh: true,
+      });
       if (existing) {
-        const userExists = await cleanupStaleUser(discordId, existing.pteroId);
-        if (userExists) {
-          return await context.editReply(
-            buildServerCard({
-              title: "✕ Account Already Exists",
-              description: "You have already registered an account. If you've forgotten credentials, contact support.",
-              ephemeral: true,
-            })
-          );
-        }
+        return await context.editReply(
+          buildServerCard({
+            title: "✕ Account Already Exists",
+            description: "You have already registered an account. If you've forgotten credentials, contact support.",
+            ephemeral: true,
+          })
+        );
       }
     } catch (err) {
       console.error("Error checking existing user:", err);

@@ -1,4 +1,4 @@
-const User = require("../../models/User");
+const userRegistry = require("../../services/userRegistry");
 const api = require("../../structures/Ptero");
 const {
   buildServerCard,
@@ -18,7 +18,7 @@ module.exports = {
       return context.createMessage(buildServerCooldownCard(cooldownRemaining));
     }
 
-    const user = await User.findOne({ discordId });
+    const user = await userRegistry.getVerifiedUser(discordId);
     if (!user) {
       return context.createMessage(
         buildServerCard({

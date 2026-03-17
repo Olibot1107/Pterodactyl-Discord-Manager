@@ -1,6 +1,7 @@
 const { ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
-const User = require("../../models/User");
+const userRegistry = require("../../services/userRegistry");
+const BoosterPremium = require("../../models/BoosterPremium");
 const {
   buildServerCard,
   buildServerCooldownCard,
@@ -25,7 +26,7 @@ module.exports = {
     const focused = interaction.options.getFocused().toLowerCase();
 
     try {
-      const user = await User.findOne({ discordId });
+      const user = await userRegistry.getVerifiedUser(discordId);
       if (!user) return interaction.respond([]);
 
       const serversRes = await api.get("/servers?per_page=1000");
@@ -59,7 +60,7 @@ module.exports = {
       return context.createMessage(buildServerCooldownCard(cooldownRemaining));
     }
 
-    const user = await User.findOne({ discordId });
+    const user = await userRegistry.getVerifiedUser(discordId);
     if (!user) {
       return await context.createMessage(
         buildServerCard({
@@ -110,6 +111,14 @@ module.exports = {
 
       // Delete server using internal numeric ID
       await api.delete(`/servers/${target.attributes.id}`);
+      const premium = await BoosterPremium.findOne({ discordId });
+      if (
+        premium &&
+        (String(premium.serverId) === String(target.attributes.id) ||
+          premium.serverIdentifier === target.attributes.identifier)
+      ) {
+        await BoosterPremium.deleteOne({ discordId });
+      }
 
       return await context.createMessage(
         buildServerCard({

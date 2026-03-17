@@ -1,7 +1,7 @@
 const { ApplicationCommandOptionType, PermissionFlagsBits } = require("discord.js");
 const axios = require("axios");
 const api = require("../../structures/Ptero");
-const User = require("../../models/User");
+const userRegistry = require("../../services/userRegistry");
 const {
   buildServerCard,
   buildServerCooldownCard,
@@ -86,7 +86,7 @@ function hasAdminAccess(actor) {
 }
 
 async function getUserAndOwnedServers(discordId) {
-  const user = await User.findOne({ discordId });
+  const user = await userRegistry.getVerifiedUser(discordId);
   if (!user) return { user: null, ownedServers: [] };
 
   const allServers = await fetchAllServers();

@@ -1,4 +1,6 @@
 const User = require("../../models/User");
+const userRegistry = require("../../services/userRegistry");
+const BoosterPremium = require("../../models/BoosterPremium");
 const api = require("../../structures/Ptero");
 const { buildServerCard } = require("../../structures/serverCommandUi");
 
@@ -17,7 +19,7 @@ module.exports = {
       );
     }
 
-    const user = await User.findOne({ discordId });
+    const user = await userRegistry.getVerifiedUser(discordId);
     if (!user) {
       return context.createMessage(
         buildServerCard({
@@ -55,7 +57,11 @@ module.exports = {
 
       // Delete user from panel and local DB
       await api.delete(`/users/${user.pteroId}`);
+      await BoosterPremium.deleteOne({ discordId }).catch((err) =>
+        console.warn("[DeleteAccount] Failed to delete premium record:", err?.message || err)
+      );
       await User.deleteOne({ discordId });
+      userRegistry.clearCachedUser(discordId);
 
       return context.createMessage(
         buildServerCard({

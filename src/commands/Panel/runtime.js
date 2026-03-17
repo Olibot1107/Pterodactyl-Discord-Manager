@@ -1,6 +1,6 @@
 const { ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
-const User = require("../../models/User");
+const userRegistry = require("../../services/userRegistry");
 const {
   buildServerCard,
   buildServerCooldownCard,
@@ -146,7 +146,7 @@ module.exports = {
     }
 
     try {
-      const user = await User.findOne({ discordId: interaction.user.id });
+      const user = await userRegistry.getVerifiedUser(interaction.user.id);
       if (!user) return interaction.respond([]);
 
       const servers = await fetchAllServers();
@@ -197,7 +197,7 @@ module.exports = {
       );
     }
 
-    const user = await User.findOne({ discordId });
+    const user = await userRegistry.getVerifiedUser(discordId);
     if (!user) {
       return context.createMessage(
         buildServerCard({

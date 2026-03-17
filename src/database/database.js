@@ -302,6 +302,34 @@ const User = {
       });
     });
   },
+
+  updateOne: (query, updates) => {
+    return new Promise((resolve, reject) => {
+      const queryKeys = Object.keys(query);
+      const updateKeys = Object.keys(updates);
+
+      if (!queryKeys.length) {
+        return reject(new Error("User update query must specify at least one field"));
+      }
+
+      if (!updateKeys.length) {
+        return resolve({ affectedRows: 0 });
+      }
+
+      const whereClause = queryKeys.map((key) => `${key} = ?`).join(' AND ');
+      const setClause = updateKeys.map((key) => `${key} = ?`).join(', ');
+      const values = [...Object.values(updates), ...Object.values(query)];
+
+      db.run(
+        `UPDATE users SET ${setClause} WHERE ${whereClause}`,
+        values,
+        function(err) {
+          if (err) reject(err);
+          else resolve({ affectedRows: this.changes });
+        }
+      );
+    });
+  },
   
   save: function() {
     return User.create(this);

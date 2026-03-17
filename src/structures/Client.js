@@ -8,6 +8,7 @@ const { ClusterClient } = require("discord-hybrid-sharding");
 const { readdirSync } = require("fs");
 const settings = require("../../settings");
 const Util = require("./Util");
+const serverPurgeService = require("../services/serverPurgeService");
 // SQLite3 database
 require("../database/database");
 
@@ -78,6 +79,11 @@ class PteroBot extends Client {
       }
 
       this.once("ready", async () => {
+        try {
+          await serverPurgeService.start(this);
+        } catch (err) {
+          console.error("[Purge] Failed to start scheduled cleanup:", err);
+        }
       });
 
       return this;

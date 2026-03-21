@@ -28,6 +28,7 @@ const ROLE_SYNC_INTERVAL_MS = 10 * 1000; // 15 minutes
 const STATUS_BOARD_INTERVAL_MS = 10 * 1000;
 const BOOSTER_GRANT_INTERVAL_MS = 60 * 1000;
 const STATUS_REQUEST_CONCURRENCY = 5;
+const SERVER_LINES_PER_PAGE = 15;
 const SERVER_STATUS_CHANNEL_ID = "1473827081853861928";
 const STATUS_BOARD_FOOTER_MARKER = "Voidium status board";
 const STATUS_BOARD_STATE_FILE = path.join(__dirname, "..", "data", "statusBoardMessage.json");
@@ -180,6 +181,14 @@ function averageBy(list, selector) {
   if (!list.length) return 0;
   const total = list.reduce((sum, item) => sum + (Number(selector(item) ?? 0) || 0), 0);
   return total / list.length;
+}
+
+function chunk(array, size) {
+  const chunks = [];
+  for (let i = 0; i < array.length; i += size) {
+    chunks.push(array.slice(i, i + size));
+  }
+  return chunks;
 }
 
 async function expireTemporaryBoosters(client) {
@@ -578,52 +587,64 @@ function buildStatusMessages(serverStatuses, totalServers, failedServers, allNod
       nodeCounts[server.stateMeta.bucket] += 1;
     }
 
-    const nodeContainer = new ContainerBuilder().setAccentColor(0x2b8a3e);
-    const nodeSummaryLines = [
-      `## Node: ${nodeName}`,
-      `${STATUS_EMOJIS.online} ${nodeCounts.online}  ${STATUS_EMOJIS.idle} ${nodeCounts.idle}  ${STATUS_EMOJIS.offline} ${nodeCounts.offline}`,
-    ];
+    const orderedServers = [...nodeServers].sort((a, b) => {
+      const aRank = statusRank[a.stateMeta.bucket] ?? 1;
+      const bRank = statusRank[b.stateMeta.bucket] ?? 1;
+      if (aRank !== bRank) return aRank - bRank;
+      return b.cpu - a.cpu;
+    });
+    const nodeLines = orderedServers.map((server) => formatStatusLine(server));
+    const linePages = nodeLines.length ? chunk(nodeLines, SERVER_LINES_PER_PAGE) : [[]];
 
-    if (nodeServers.length > 0) {
-      const nodeAvgCpu = averageBy(nodeServers, (s) => s.cpu);
-      const nodeAvgMem = averageBy(nodeServers, (s) => s.memory);
-      const nodeAvgDisk = averageBy(nodeServers, (s) => s.disk);
-      nodeSummaryLines.push(
-        `Avg CPU: ${formatPercent(nodeAvgCpu)}%  |  Avg RAM: ${formatBytesToMB(nodeAvgMem)}  |  Avg Disk: ${formatBytesToMB(nodeAvgDisk)}`
+    linePages.forEach((pageLines, pageIndex) => {
+      const container = new ContainerBuilder().setAccentColor(0x2b8a3e);
+      const headerLines = [];
+      const pageTitle =
+        pageIndex === 0
+          ? `## Node: ${nodeName}`
+          : `## Node: ${nodeName} (Page ${pageIndex + 1}/${linePages.length})`;
+      headerLines.push(pageTitle);
+      headerLines.push(
+        `${STATUS_EMOJIS.online} ${nodeCounts.online}  ${STATUS_EMOJIS.idle} ${nodeCounts.idle}  ${STATUS_EMOJIS.offline} ${nodeCounts.offline}`
       );
-    } else {
-      nodeSummaryLines.push("No active servers on this node yet.");
-    }
 
-    nodeSummaryLines.push(`Updated: <t:${nowUnix}:R>`);
-    nodeSummaryLines.push(`*${STATUS_BOARD_FOOTER_MARKER}*`);
-
-    nodeContainer.addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(nodeSummaryLines.join("\n"))
-    );
-
-    const detailLines = [];
-    if (nodeServers.length) {
-      detailLines.push("**Top servers:**");
-      const topNodeServers = [...nodeServers]
-        .sort((a, b) => b.cpu - a.cpu)
-        .slice(0, 4)
-        .map((server) => formatStatusLine(server));
-
-      detailLines.push(...topNodeServers);
-      if (nodeServers.length > topNodeServers.length) {
-        detailLines.push(`+ ${nodeServers.length - topNodeServers.length} more server(s)...`);
+      if (nodeServers.length) {
+        const nodeAvgCpu = averageBy(nodeServers, (s) => s.cpu);
+        const nodeAvgMem = averageBy(nodeServers, (s) => s.memory);
+        const nodeAvgDisk = averageBy(nodeServers, (s) => s.disk);
+        headerLines.push(
+          `Avg CPU: ${formatPercent(nodeAvgCpu)}%  |  Avg RAM: ${formatBytesToMB(nodeAvgMem)}  |  Avg Disk: ${formatBytesToMB(nodeAvgDisk)}`
+        );
+        const start = pageIndex * SERVER_LINES_PER_PAGE + 1;
+        const end = start + pageLines.length - 1;
+        headerLines.push(
+          `Showing servers ${start}-${end} of ${nodeLines.length}`
+        );
+      } else {
+        headerLines.push("No active servers on this node yet.");
       }
-    } else {
-      detailLines.push("No server data available yet.");
-    }
 
-    nodeContainer.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
-    nodeContainer.addTextDisplayComponents(
-      new TextDisplayBuilder().setContent(detailLines.join("\n"))
-    );
+      headerLines.push(`Updated: <t:${nowUnix}:R>`);
+      headerLines.push(`*${STATUS_BOARD_FOOTER_MARKER}*`);
 
-    messages.push(buildBoardMessage(nodeContainer));
+      container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent(headerLines.join("\n"))
+      );
+
+      if (pageLines.length) {
+        container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+        container.addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(pageLines.join("\n"))
+        );
+      } else {
+        container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+        container.addTextDisplayComponents(
+          new TextDisplayBuilder().setContent("No server data available yet.")
+        );
+      }
+
+      messages.push(buildBoardMessage(container));
+    });
   }
 
   return messages;

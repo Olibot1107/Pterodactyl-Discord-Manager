@@ -634,7 +634,7 @@ function buildStatusMessages(serverStatuses, totalServers, failedServers, allNod
       if (pageLines.length) {
         container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
         container.addTextDisplayComponents(
-          new TextDisplayBuilder().setContent(pageLines.join("\n"))
+          new TextDisplayBuilder().setContent(pageLines.join("\n\n"))
         );
       } else {
         container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));

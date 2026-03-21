@@ -223,7 +223,7 @@ module.exports = {
         environment: egg.environment,
         limits: serverLimits,
         feature_limits: {
-          databases: 0,
+          databases: 3,
           backups: 1,
           allocations: 1,
         },

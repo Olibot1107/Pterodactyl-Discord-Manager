@@ -24,7 +24,7 @@ async function getServerAttributes(serverId) {
   return res.data?.attributes || {};
 }
 
-function buildBuildPayload(attrs, nextLimits = {}) {
+function buildBuildPayload(attrs, nextLimits = {}, featureLimitOverrides = {}) {
   const allocation = resolveAllocationId(attrs);
   if (!allocation) {
     const err = new Error("Unable to resolve server allocation for build update.");
@@ -47,16 +47,28 @@ function buildBuildPayload(attrs, nextLimits = {}) {
         ? nextLimits.oom_disabled
         : Boolean(current.oom_disabled),
     feature_limits: {
-      databases: Number(featureLimits.databases ?? 0),
-      backups: Number(featureLimits.backups ?? 0),
-      allocations: Number(featureLimits.allocations ?? 0),
+      databases: Number(
+        featureLimitOverrides.databases ??
+          featureLimits.databases ??
+          0
+      ),
+      backups: Number(
+        featureLimitOverrides.backups ??
+          featureLimits.backups ??
+          0
+      ),
+      allocations: Number(
+        featureLimitOverrides.allocations ??
+          featureLimits.allocations ??
+          0
+      ),
     },
   };
 }
 
-async function updateServerBuild(serverId, nextLimits) {
+async function updateServerBuild(serverId, nextLimits = {}, featureLimitOverrides = {}) {
   const attrs = await getServerAttributes(serverId);
-  const payload = buildBuildPayload(attrs, nextLimits);
+  const payload = buildBuildPayload(attrs, nextLimits, featureLimitOverrides);
   await api.patch(`/servers/${serverId}/build`, payload);
   return attrs;
 }

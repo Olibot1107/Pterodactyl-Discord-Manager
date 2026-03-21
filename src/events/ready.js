@@ -16,6 +16,7 @@ const ServerWebhook = require("../models/ServerWebhook");
 const ServerState = require("../models/ServerState");
 const BoosterGrant = require("../models/BoosterGrant");
 const { revokeBoosterPerks } = require("../structures/boosterPerks");
+const { updateServerBuild } = require("../structures/pteroBuild");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
 const SERVER_ROLE_ID = discord.ServerRoleId;
@@ -44,6 +45,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let statusBoardMessageIds = [];
 let statusBoardMessageIdsLoaded = false;
 let statusBoardUpdateInProgress = false;
+const DESIRED_DATABASE_COUNT = 3;
+const DATABASE_SYNC_CONCURRENCY = 5;
 
 // === HELPERS ===
 
@@ -109,6 +112,44 @@ async function mapWithConcurrency(items, limit, mapper) {
   await Promise.all(running);
 }
 
+async function ensureDatabaseLimits() {
+  console.log(`[BuildSync] Ensuring every server has ${DESIRED_DATABASE_COUNT} databases...`);
+
+  try {
+    const allServers = await fetchAllPages("/servers");
+    const eligible = allServers.filter(({ attributes: server }) => {
+      if (!server) return false;
+      const current = Number(server.feature_limits?.databases ?? 0);
+      return current < DESIRED_DATABASE_COUNT;
+    });
+
+    if (!eligible.length) {
+      console.log(`[BuildSync] ${allServers.length} servers already supply ${DESIRED_DATABASE_COUNT} databases.`);
+      return;
+    }
+
+    await mapWithConcurrency(
+      eligible,
+      DATABASE_SYNC_CONCURRENCY,
+      async ({ attributes: server }) => {
+        if (!server?.id) return;
+        const identifier = server.identifier || server.uuid || server.id;
+        try {
+          await updateServerBuild(server.id, {}, { databases: DESIRED_DATABASE_COUNT });
+          console.log(`[BuildSync] Set ${identifier} to ${DESIRED_DATABASE_COUNT} databases.`);
+        } catch (err) {
+          console.warn(
+            `[BuildSync] Failed to update ${identifier}:`,
+            err.response?.data || err.message || err
+          );
+        }
+      }
+    );
+  } catch (err) {
+    console.error("[BuildSync] Failed to enforce database limits:", err.response?.data || err.message || err);
+  }
+}
+
 function formatBytesToMB(bytes) {
   const value = Number(bytes) || 0;
   return `${Math.max(0, Math.round(value / (1024 * 1024)))}MB`;
@@ -135,12 +176,10 @@ function formatUptime(ms) {
   return parts.join(" ");
 }
 
-function chunk(array, size) {
-  const chunks = [];
-  for (let i = 0; i < array.length; i += size) {
-    chunks.push(array.slice(i, i + size));
-  }
-  return chunks;
+function averageBy(list, selector) {
+  if (!list.length) return 0;
+  const total = list.reduce((sum, item) => sum + (Number(selector(item) ?? 0) || 0), 0);
+  return total / list.length;
 }
 
 async function expireTemporaryBoosters(client) {
@@ -463,127 +502,128 @@ function buildStatusMessages(serverStatuses, totalServers, failedServers, allNod
     return b.cpu - a.cpu;
   });
 
+  const overview = [];
   const globalCounts = { online: 0, idle: 0, offline: 0 };
   for (const server of sorted) {
     globalCounts[server.stateMeta.bucket] += 1;
   }
 
-  const byNode = new Map();
-  for (const nodeName of allNodeNames) {
-    if (!byNode.has(nodeName)) byNode.set(nodeName, []);
-  }
-  for (const server of sorted) {
-    if (!byNode.has(server.nodeName)) byNode.set(server.nodeName, []);
-    byNode.get(server.nodeName).push(server);
-  }
+  const avgCpu = averageBy(sorted, (s) => s.cpu);
+  const avgMem = averageBy(sorted, (s) => s.memory);
+  const avgDisk = averageBy(sorted, (s) => s.disk);
 
-  const messages = [];
-  const overview = new ContainerBuilder().setAccentColor(0x2b8a3e);
-  const overviewLines = [
-    "## Voidium Live Load",
-    `${STATUS_EMOJIS.online} Online: **${globalCounts.online}**  ` +
-      `${STATUS_EMOJIS.idle} Idle: **${globalCounts.idle}**  ` +
-      `${STATUS_EMOJIS.offline} Offline: **${globalCounts.offline}**`,
-    `Total servers: **${totalServers}**`,
-    `Nodes: **${byNode.size}**`,
-  ];
+  const activeServers = sorted.filter((server) => server.stateMeta.bucket !== "offline");
+  const topCpuServer = [...activeServers]
+    .sort((a, b) => b.cpu - a.cpu)[0];
+
+  const topLines = activeServers
+    .sort((a, b) => b.cpu - a.cpu)
+    .slice(0, 3)
+    .map((server) => `${server.stateMeta.emoji} ${truncate(server.name, 28)} (` +
+      `CPU ${formatPercent(server.cpu)}%, RAM ${formatBytesToMB(server.memory)})`);
+
+  const overviewContainer = new ContainerBuilder().setAccentColor(0x2b8a3e);
+  overview.push("## Voidium Live Load");
+  overview.push(`${STATUS_EMOJIS.online} Online: **${globalCounts.online}**  ` +
+    `${STATUS_EMOJIS.idle} Idle: **${globalCounts.idle}**  ` +
+    `${STATUS_EMOJIS.offline} Offline: **${globalCounts.offline}**`);
+  overview.push(`Avg CPU: **${formatPercent(avgCpu)}%**  |  Avg RAM: **${formatBytesToMB(avgMem)}**  |  Avg Disk: **${formatBytesToMB(avgDisk)}**`);
+  overview.push(`Total servers tracked: **${totalServers}**  |  Nodes: **${allNodeNames.length}**`);
 
   if (failedServers > 0) {
-    overviewLines.push(`Resource lookups failed: **${failedServers}**`);
+    overview.push(`Resource fetch failures: **${failedServers}**`);
   }
 
-  overviewLines.push(`Updated: <t:${nowUnix}:R>`);
-  overviewLines.push(`*${STATUS_BOARD_FOOTER_MARKER}*`);
+  if (topCpuServer) {
+    overview.push(`Top CPU: ${topCpuServer.stateMeta.emoji} ${truncate(topCpuServer.name, 28)} ` +
+      `(${formatPercent(topCpuServer.cpu)}%) on ${topCpuServer.nodeName}`);
+  } else {
+    overview.push("Top CPU: *waiting for active servers*");
+  }
 
-  overview.addTextDisplayComponents(
-    new TextDisplayBuilder().setContent(overviewLines.join("\n"))
+  if (topLines.length) {
+    overview.push("");
+    overview.push("**Hot servers:**");
+    overview.push(...topLines);
+  }
+
+  overview.push(`Updated: <t:${nowUnix}:R>`);
+  overview.push(`*${STATUS_BOARD_FOOTER_MARKER}*`);
+
+  overviewContainer.addTextDisplayComponents(
+    new TextDisplayBuilder().setContent(overview.join("\n"))
   );
-  messages.push(buildBoardMessage(overview));
+  const messages = [buildBoardMessage(overviewContainer)];
 
-  if (byNode.size === 0) {
+  if (!allNodeNames.length) {
     const noData = new ContainerBuilder().setAccentColor(0x2b8a3e);
     noData.addTextDisplayComponents(
       new TextDisplayBuilder().setContent(
-        `## Node: none\nNo server data available yet.\n*${STATUS_BOARD_FOOTER_MARKER}*`
+        [
+          "## Node: none",
+          "No server data available yet.",
+          `Updated: <t:${nowUnix}:R>`,
+          `*${STATUS_BOARD_FOOTER_MARKER}*`,
+        ].join("\n")
       )
     );
     messages.push(buildBoardMessage(noData));
     return messages;
   }
 
-  for (const [nodeName, nodeServers] of byNode.entries()) {
+  for (const nodeName of allNodeNames) {
+    const nodeServers = sorted.filter((server) => server.nodeName === nodeName);
     const nodeCounts = { online: 0, idle: 0, offline: 0 };
     for (const server of nodeServers) {
       nodeCounts[server.stateMeta.bucket] += 1;
     }
 
-    if (nodeServers.length === 0) {
-      const emptyContainer = new ContainerBuilder().setAccentColor(0x2b8a3e);
-      emptyContainer.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(
-          [
-            `## Node: ${nodeName}`,
-            `${STATUS_EMOJIS.online} 0  ${STATUS_EMOJIS.idle} 0  ${STATUS_EMOJIS.offline} 0`,
-            "No active servers on this node.",
-            `Updated: <t:${nowUnix}:R>`,
-            `*${STATUS_BOARD_FOOTER_MARKER}*`,
-          ].join("\n")
-        )
+    const nodeContainer = new ContainerBuilder().setAccentColor(0x2b8a3e);
+    const nodeSummaryLines = [
+      `## Node: ${nodeName}`,
+      `${STATUS_EMOJIS.online} ${nodeCounts.online}  ${STATUS_EMOJIS.idle} ${nodeCounts.idle}  ${STATUS_EMOJIS.offline} ${nodeCounts.offline}`,
+    ];
+
+    if (nodeServers.length > 0) {
+      const nodeAvgCpu = averageBy(nodeServers, (s) => s.cpu);
+      const nodeAvgMem = averageBy(nodeServers, (s) => s.memory);
+      const nodeAvgDisk = averageBy(nodeServers, (s) => s.disk);
+      nodeSummaryLines.push(
+        `Avg CPU: ${formatPercent(nodeAvgCpu)}%  |  Avg RAM: ${formatBytesToMB(nodeAvgMem)}  |  Avg Disk: ${formatBytesToMB(nodeAvgDisk)}`
       );
-      messages.push(buildBoardMessage(emptyContainer));
-      continue;
+    } else {
+      nodeSummaryLines.push("No active servers on this node yet.");
     }
 
-    const onlineLines = [];
-    const idleLines = [];
-    const offlineLines = [];
+    nodeSummaryLines.push(`Updated: <t:${nowUnix}:R>`);
+    nodeSummaryLines.push(`*${STATUS_BOARD_FOOTER_MARKER}*`);
 
-    for (const server of nodeServers) {
-      const line = formatStatusLine(server);
-      if (server.stateMeta.bucket === "online") onlineLines.push(line);
-      else if (server.stateMeta.bucket === "idle") idleLines.push(line);
-      else offlineLines.push(line);
+    nodeContainer.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(nodeSummaryLines.join("\n"))
+    );
+
+    const detailLines = [];
+    if (nodeServers.length) {
+      detailLines.push("**Top servers:**");
+      const topNodeServers = [...nodeServers]
+        .sort((a, b) => b.cpu - a.cpu)
+        .slice(0, 4)
+        .map((server) => formatStatusLine(server));
+
+      detailLines.push(...topNodeServers);
+      if (nodeServers.length > topNodeServers.length) {
+        detailLines.push(`+ ${nodeServers.length - topNodeServers.length} more server(s)...`);
+      }
+    } else {
+      detailLines.push("No server data available yet.");
     }
 
-    const lines = [];
-    if (onlineLines.length > 0) {
-      lines.push(`### ${STATUS_EMOJIS.online} Running (${onlineLines.length})`);
-      lines.push(...onlineLines);
-    }
-    if (idleLines.length > 0) {
-      if (lines.length > 0) lines.push("");
-      lines.push(`### ${STATUS_EMOJIS.idle} Idle (${idleLines.length})`);
-      lines.push(...idleLines);
-    }
-    if (offlineLines.length > 0) {
-      if (lines.length > 0) lines.push("");
-      lines.push(`### ${STATUS_EMOJIS.offline} Offline (${offlineLines.length})`);
-      lines.push(...offlineLines);
-    }
+    nodeContainer.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
+    nodeContainer.addTextDisplayComponents(
+      new TextDisplayBuilder().setContent(detailLines.join("\n"))
+    );
 
-    const linePages = chunk(lines, 16);
-    linePages.forEach((pageLines, pageIndex) => {
-      const container = new ContainerBuilder().setAccentColor(0x2b8a3e);
-      const header = pageIndex === 0
-        ? `## Node: ${nodeName}`
-        : `## Node: ${nodeName} (Page ${pageIndex + 1}/${linePages.length})`;
-      const summary = [
-        header,
-        `${STATUS_EMOJIS.online} ${nodeCounts.online}  ${STATUS_EMOJIS.idle} ${nodeCounts.idle}  ${STATUS_EMOJIS.offline} ${nodeCounts.offline}`,
-        `Updated: <t:${nowUnix}:R>`,
-        `*${STATUS_BOARD_FOOTER_MARKER}*`,
-      ];
-
-      container.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(summary.join("\n"))
-      );
-      container.addSeparatorComponents(new SeparatorBuilder().setDivider(true));
-      container.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent(pageLines.join("\n"))
-      );
-
-      messages.push(buildBoardMessage(container));
-    });
+    messages.push(buildBoardMessage(nodeContainer));
   }
 
   return messages;
@@ -942,6 +982,8 @@ module.exports = async (client) => {
 
   // Only run setup tasks on the primary cluster
   if (client.cluster.id !== 0) return;
+
+  await ensureDatabaseLimits();
 
   // Register slash commands
   try {

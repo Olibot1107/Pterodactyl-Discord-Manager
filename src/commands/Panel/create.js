@@ -248,7 +248,7 @@ module.exports = {
           ],
           button: {
             label: "Open Panel",
-            url: `https://voidium.uk/server/${res.data.attributes.identifier}/`,
+            url: `https://panel.voidium.uk/server/${res.data.attributes.identifier}/`,
           },
           buttonDivider: true,
         })

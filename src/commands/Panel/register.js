@@ -329,7 +329,7 @@ module.exports = {
                 `├─ **Email:** \`${email}\``,
                 `├─ **Username:** \`${discordId}\``,
                 `├─ **Password:** ||${password}||`,
-                `└─ **Panel URL:** ${ptero.url}`,
+                `└─ **Panel URL:** panel.voidium.uk`,
               ],
               ephemeral: true,
             })

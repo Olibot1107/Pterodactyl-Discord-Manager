@@ -6,7 +6,7 @@ const sqlite3 = require("sqlite3").verbose();
 const axios = require("axios");
 const api = require("../src/structures/Ptero");
 
-const STATUS_PORT = 3000;
+const STATUS_PORT = Number(process.env.STATUS_PORT) || 3000;
 const SAMPLE_INTERVAL_MS = 4_000;
 const PROBE_TIMEOUT_MS = 5_000;
 const IN_MEMORY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -77,6 +77,8 @@ function hydrateHistoryRow(row) {
     online: !!row.online,
     maintenance: !!row.maintenance,
     latencyMs: Number.isFinite(Number(row.latencyMs)) ? Number(row.latencyMs) : null,
+    statusCode: Number.isFinite(Number(row.statusCode)) ? Number(row.statusCode) : null,
+    probeUrl: row.probeUrl || null,
     error: row.error || null,
   };
 }
@@ -86,7 +88,7 @@ async function loadHistoryFromDb() {
   const cutoff = Date.now() - IN_MEMORY_WINDOW_MS;
   const rows = await dbAll(
     `
-      SELECT nodeId, nodeName, fqdn, memoryMb, diskMb, ts, at, online, maintenance, latencyMs, error
+      SELECT nodeId, nodeName, fqdn, memoryMb, diskMb, ts, at, online, maintenance, latencyMs, statusCode, probeUrl, error
       FROM node_ping_history
       WHERE ts >= ?
       ORDER BY ts ASC
@@ -103,11 +105,36 @@ async function loadHistoryFromDb() {
       id: nodeId,
       name: row.nodeName || `Node #${nodeId}`,
       fqdn: row.fqdn || "",
+      panel: {
+        id: nodeId,
+        uuid: null,
+        name: row.nodeName || `Node #${nodeId}`,
+        description: null,
+        locationId: null,
+        public: null,
+        fqdn: row.fqdn || null,
+        scheme: "http",
+        behindProxy: false,
+        maintenanceMode: sample.maintenance,
+        daemonListen: null,
+        daemonSftp: null,
+        daemonBase: null,
+        memoryMb: Number(row.memoryMb) || 0,
+        memoryOverallocate: null,
+        diskMb: Number(row.diskMb) || 0,
+        diskOverallocate: null,
+        uploadSizeMb: null,
+        createdAt: null,
+        updatedAt: null,
+      },
       memoryMb: Number(row.memoryMb) || 0,
       diskMb: Number(row.diskMb) || 0,
       maintenance: sample.maintenance,
       online: sample.online,
       latencyMs: sample.latencyMs,
+      statusCode: sample.statusCode,
+      probeUrl: sample.probeUrl,
+      probeTarget: null,
       lastCheckedAt: sample.at,
       history: [],
     };
@@ -116,9 +143,18 @@ async function loadHistoryFromDb() {
     existing.fqdn = row.fqdn || existing.fqdn;
     existing.memoryMb = Number(row.memoryMb) || existing.memoryMb;
     existing.diskMb = Number(row.diskMb) || existing.diskMb;
+    if (existing.panel) {
+      existing.panel.name = row.nodeName || existing.panel.name;
+      existing.panel.fqdn = row.fqdn || existing.panel.fqdn;
+      existing.panel.maintenanceMode = sample.maintenance;
+      existing.panel.memoryMb = Number(row.memoryMb) || existing.panel.memoryMb;
+      existing.panel.diskMb = Number(row.diskMb) || existing.panel.diskMb;
+    }
     existing.maintenance = sample.maintenance;
     existing.online = sample.online;
     existing.latencyMs = sample.latencyMs;
+    existing.statusCode = sample.statusCode;
+    existing.probeUrl = sample.probeUrl;
     existing.lastCheckedAt = sample.at;
     existing.history.push(sample);
     nodeMonitor.nodes.set(nodeId, existing);
@@ -135,8 +171,8 @@ async function persistNodeSample(node, probe, nowTs) {
   await dbRun(
     `
       INSERT INTO node_ping_history (
-        nodeId, nodeName, fqdn, memoryMb, diskMb, ts, at, online, maintenance, latencyMs, error
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        nodeId, nodeName, fqdn, memoryMb, diskMb, ts, at, online, maintenance, latencyMs, statusCode, probeUrl, error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     [
       Number(node.id),
@@ -149,9 +185,24 @@ async function persistNodeSample(node, probe, nowTs) {
       probe.online ? 1 : 0,
       node.maintenance_mode ? 1 : 0,
       Number.isFinite(Number(probe.latencyMs)) ? Number(probe.latencyMs) : null,
+      Number.isFinite(Number(probe.statusCode)) ? Number(probe.statusCode) : null,
+      probe.probeUrl || null,
       probe.error || null,
     ]
   );
+}
+
+async function ensureHistorySchema() {
+  if (!historyDb) return;
+  const cols = await dbAll("PRAGMA table_info(node_ping_history)");
+  const existing = new Set((cols || []).map((c) => c.name));
+
+  if (!existing.has("statusCode")) {
+    await dbRun("ALTER TABLE node_ping_history ADD COLUMN statusCode INTEGER");
+  }
+  if (!existing.has("probeUrl")) {
+    await dbRun("ALTER TABLE node_ping_history ADD COLUMN probeUrl TEXT");
+  }
 }
 
 async function initHistoryStorage() {
@@ -173,6 +224,8 @@ async function initHistoryStorage() {
         online INTEGER NOT NULL,
         maintenance INTEGER NOT NULL,
         latencyMs INTEGER,
+        statusCode INTEGER,
+        probeUrl TEXT,
         error TEXT
       )
     `
@@ -190,6 +243,7 @@ async function initHistoryStorage() {
     `
   );
 
+  await ensureHistorySchema();
   await pruneOldHistory();
   await loadHistoryFromDb();
   nodeMonitor.persistenceEnabled = true;
@@ -217,13 +271,33 @@ async function fetchAllNodes() {
   return nodes;
 }
 
-function escapeHtml(input) {
-  return String(input ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function normalizePanelNode(node) {
+  const memoryMb = Number(node?.memory) || 0;
+  const diskMb = Number(node?.disk) || 0;
+  const uploadSizeMb = node?.upload_size == null ? null : Number(node.upload_size);
+
+  return {
+    id: Number(node?.id),
+    uuid: node?.uuid || null,
+    name: node?.name || `Node #${node?.id ?? "?"}`,
+    description: node?.description || null,
+    locationId: node?.location_id == null ? null : Number(node.location_id),
+    public: node?.public == null ? null : !!node.public,
+    fqdn: node?.fqdn || null,
+    scheme: node?.scheme === "https" ? "https" : "http",
+    behindProxy: !!node?.behind_proxy,
+    maintenanceMode: !!node?.maintenance_mode,
+    daemonListen: node?.daemon_listen == null ? null : Number(node.daemon_listen),
+    daemonSftp: node?.daemon_sftp == null ? null : Number(node.daemon_sftp),
+    daemonBase: node?.daemon_base || null,
+    memoryMb,
+    memoryOverallocate: node?.memory_overallocate == null ? null : Number(node.memory_overallocate),
+    diskMb,
+    diskOverallocate: node?.disk_overallocate == null ? null : Number(node.disk_overallocate),
+    uploadSizeMb: Number.isFinite(uploadSizeMb) ? uploadSizeMb : null,
+    createdAt: node?.created_at || null,
+    updatedAt: node?.updated_at || null,
+  };
 }
 
 function resolveProbeTarget(node) {
@@ -262,7 +336,7 @@ function resolveProbeTarget(node) {
 async function probeNodeHttp(node, timeoutMs = PROBE_TIMEOUT_MS) {
   const target = resolveProbeTarget(node);
   if (!target) {
-    return { online: false, latencyMs: null, error: "missing fqdn", statusCode: null };
+    return { online: false, latencyMs: null, error: "missing fqdn", statusCode: null, probeUrl: null, target: null };
   }
 
   const url = `${target.scheme}://${target.host}:${target.port}/api/system`;
@@ -288,6 +362,8 @@ async function probeNodeHttp(node, timeoutMs = PROBE_TIMEOUT_MS) {
       latencyMs,
       error: online ? null : `http_${statusCode}`,
       statusCode,
+      probeUrl: url,
+      target,
     };
   } catch (err) {
     return {
@@ -295,76 +371,115 @@ async function probeNodeHttp(node, timeoutMs = PROBE_TIMEOUT_MS) {
       latencyMs: null,
       error: String(err.code || err.message || "request_failed"),
       statusCode: null,
+      probeUrl: url,
+      target,
     };
   }
 }
 
 function updateNodeHistory(node, probe, nowTs = Date.now()) {
-  const existing = nodeMonitor.nodes.get(node.id) || { history: [] };
+  const panel = normalizePanelNode(node);
+  const existing = nodeMonitor.nodes.get(panel.id) || { history: [] };
   const history = Array.isArray(existing.history) ? existing.history.slice() : [];
-  history.push({ ts: nowTs, at: new Date(nowTs).toISOString(), online: !!probe.online, maintenance: !!node.maintenance_mode, latencyMs: probe.latencyMs, error: probe.error });
+  const at = new Date(nowTs).toISOString();
+
+  history.push({
+    ts: nowTs,
+    at,
+    online: !!probe.online,
+    maintenance: !!panel.maintenanceMode,
+    latencyMs: probe.latencyMs,
+    statusCode: Number.isFinite(Number(probe.statusCode)) ? Number(probe.statusCode) : null,
+    probeUrl: probe.probeUrl || null,
+    error: probe.error || null,
+  });
   while (history.length && nowTs - history[0].ts > IN_MEMORY_WINDOW_MS) history.shift();
-  nodeMonitor.nodes.set(node.id, {
-    id: node.id, name: node.name, fqdn: node.fqdn,
-    memoryMb: node.memory, diskMb: node.disk,
-    maintenance: !!node.maintenance_mode,
-    online: !!probe.online, latencyMs: probe.latencyMs,
+
+  nodeMonitor.nodes.set(panel.id, {
+    id: panel.id,
+    name: panel.name,
+    fqdn: panel.fqdn,
+    panel,
+    memoryMb: panel.memoryMb,
+    diskMb: panel.diskMb,
+    maintenance: !!panel.maintenanceMode,
+    online: !!probe.online,
+    latencyMs: probe.latencyMs,
+    statusCode: Number.isFinite(Number(probe.statusCode)) ? Number(probe.statusCode) : null,
+    probeUrl: probe.probeUrl || null,
+    probeTarget: probe.target || null,
     lastCheckedAt: history[history.length - 1]?.at || null,
     history,
   });
 }
 
-function formatDuration(ms) {
-  const s = Math.max(0, Math.floor((ms || 0) / 1000));
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${sec}s`;
-  return `${sec}s`;
+function getMaxSamplesForWindow(windowMs) {
+  if (windowMs >= RANGE_MAP["7d"]) return 360;
+  return 260;
 }
 
-function formatUptime(seconds) {
-  const d = Math.floor(seconds / 86400), h = Math.floor((seconds % 86400) / 3600),
-    m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
-  if (d > 0) return `${d}d ${h}h ${m}m`;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
+function downsampleHistory(history, maxPoints = 260) {
+  if (!Array.isArray(history) || history.length <= maxPoints) return history || [];
 
-function computeNodeView(nodeEntry, windowMs = DEFAULT_VIEW_WINDOW_MS) {
-  const samples = nodeEntry.history || [];
-  const uptimeSamples = samples.filter((s) => !s.maintenance);
-  const total = uptimeSamples.length;
-  const upCount = uptimeSamples.filter((s) => s.online).length;
-  const uptimePercent = total ? ((upCount / total) * 100).toFixed(2) : "0.00";
-  const downCount = total - upCount;
-  const downDurationMs = downCount * SAMPLE_INTERVAL_MS;
-  let downIncidents = 0, longestDownMs = 0, currentDownStartTs = null;
+  const bucketSize = Math.ceil(history.length / maxPoints);
+  const reduced = [];
 
-  for (const sample of uptimeSamples) {
-    if (!sample.online) {
-      if (currentDownStartTs == null) { currentDownStartTs = sample.ts; downIncidents++; }
-    } else if (currentDownStartTs != null) {
-      longestDownMs = Math.max(longestDownMs, sample.ts - currentDownStartTs);
-      currentDownStartTs = null;
+  for (let i = 0; i < history.length; i += bucketSize) {
+    const chunk = history.slice(i, i + bucketSize);
+    if (!chunk.length) continue;
+
+    const last = chunk[chunk.length - 1];
+    const onlineLatencies = chunk
+      .filter((s) => s.online && !s.maintenance && Number.isFinite(s.latencyMs))
+      .map((s) => Number(s.latencyMs));
+
+    const downCount = chunk.filter((s) => !s.online).length;
+    const onlineCount = chunk.length - downCount;
+    const chunkOnline = onlineCount >= downCount;
+
+    let latencyMs = null;
+    if (chunkOnline && onlineLatencies.length) {
+      const avg = onlineLatencies.reduce((sum, v) => sum + v, 0) / onlineLatencies.length;
+      latencyMs = Math.round(avg);
     }
-  }
-  if (currentDownStartTs != null) longestDownMs = Math.max(longestDownMs, Date.now() - currentDownStartTs);
 
+    reduced.push({
+      ts: Number(last.ts),
+      at: last.at,
+      online: chunkOnline,
+      maintenance: !!last.maintenance,
+      latencyMs,
+      statusCode: last.statusCode ?? null,
+      probeUrl: last.probeUrl ?? null,
+      error: chunkOnline ? null : (last.error || "downsampled_down"),
+    });
+  }
+
+  return reduced;
+}
+
+function computeUptimeBars(samples, windowMs) {
+  const now = Date.now();
+  const windowStart = now - windowMs;
+
+  const uptimeSamples = (samples || []).filter((s) => !s.maintenance);
   const uptimeBuckets = Math.max(48, Math.min(180, Math.round(windowMs / (4 * 60 * 60 * 1000))));
-  const now = Date.now(), windowStart = now - windowMs, bucketSizeMs = windowMs / uptimeBuckets;
+  const bucketSizeMs = windowMs / uptimeBuckets;
   const buckets = Array.from({ length: uptimeBuckets }, () => ({ total: 0, up: 0, down: 0 }));
+
   for (const sample of uptimeSamples) {
     if (!sample.ts || sample.ts < windowStart) continue;
     const idx = Math.max(0, Math.min(uptimeBuckets - 1, Math.floor((sample.ts - windowStart) / bucketSizeMs)));
     const b = buckets[idx];
     b.total++;
-    if (sample.online) b.up++; else b.down++;
+    if (sample.online) b.up++;
+    else b.down++;
   }
 
-  const uptimeBars = buckets.map((b) => {
+  return buckets.map((b) => {
     if (b.total === 0) return { level: "none", uptime: null, downRatio: 0, label: "No data" };
-    const uptime = b.up / b.total, downRatio = b.down / b.total;
+    const uptime = b.up / b.total;
+    const downRatio = b.down / b.total;
     let level = "mixed";
     if (downRatio === 0) level = "up";
     else if (downRatio === 1) level = "down";
@@ -373,16 +488,99 @@ function computeNodeView(nodeEntry, windowMs = DEFAULT_VIEW_WINDOW_MS) {
       : `${Math.round(uptime * 100)}% up / ${Math.round(downRatio * 100)}% down`;
     return { level, uptime, downRatio, label };
   });
+}
 
-  let statusLabel = "Offline";
-  if (nodeEntry.maintenance) statusLabel = "Maintenance";
-  else if (nodeEntry.online) statusLabel = "Operational";
+function getSampleState(sample) {
+  if (!sample) return "unknown";
+  if (sample.maintenance) return "maintenance";
+  if (sample.online) return "operational";
+  return "offline";
+}
 
-  // avg ping from last 30 samples
-  const recentPings = samples.slice(-30).filter((s) => s.online && !s.maintenance && Number.isFinite(s.latencyMs)).map((s) => s.latencyMs);
-  const avgLatencyMs = recentPings.length ? Math.round(recentPings.reduce((a, b) => a + b, 0) / recentPings.length) : null;
+function computeNodeWindowStats(samples, windowMs, nowTs = Date.now()) {
+  const ordered = Array.isArray(samples) ? samples.slice().sort((a, b) => Number(a.ts) - Number(b.ts)) : [];
+  const cutoff = nowTs - windowMs;
+  const inWindow = ordered.filter((s) => Number(s.ts) >= cutoff);
+  const last = inWindow[inWindow.length - 1] || null;
 
-  return { ...nodeEntry, statusLabel, uptimePercent, checks: total, downDurationMs, downIncidents, longestDownMs, uptimeBars, avgLatencyMs };
+  const uptimeSamples = inWindow.filter((s) => !s.maintenance);
+  const checks = uptimeSamples.length;
+  const up = uptimeSamples.filter((s) => s.online).length;
+  const down = checks - up;
+  const uptimePercent = checks ? Number(((up / checks) * 100).toFixed(2)) : null;
+  const downDurationMs = down * SAMPLE_INTERVAL_MS;
+
+  let downIncidents = 0;
+  let longestDownMs = 0;
+  let currentDownStartTs = null;
+
+  for (const sample of uptimeSamples) {
+    if (!sample.online) {
+      if (currentDownStartTs == null) {
+        currentDownStartTs = sample.ts;
+        downIncidents++;
+      }
+    } else if (currentDownStartTs != null) {
+      longestDownMs = Math.max(longestDownMs, sample.ts - currentDownStartTs);
+      currentDownStartTs = null;
+    }
+  }
+  if (currentDownStartTs != null) {
+    longestDownMs = Math.max(longestDownMs, nowTs - currentDownStartTs);
+  }
+
+  const recentPings = inWindow
+    .slice(-30)
+    .filter((s) => s.online && !s.maintenance && Number.isFinite(s.latencyMs))
+    .map((s) => s.latencyMs);
+  const avgLatencyMs = recentPings.length
+    ? Math.round(recentPings.reduce((a, b) => a + b, 0) / recentPings.length)
+    : null;
+
+  const state = getSampleState(last);
+  let stateSinceAt = last?.at || null;
+  if (last) {
+    for (let i = inWindow.length - 2; i >= 0; i--) {
+      if (getSampleState(inWindow[i]) !== state) break;
+      stateSinceAt = inWindow[i].at;
+    }
+  }
+
+  let lastOnlineAt = null;
+  for (let i = inWindow.length - 1; i >= 0; i--) {
+    const s = inWindow[i];
+    if (s.online && !s.maintenance) {
+      lastOnlineAt = s.at;
+      break;
+    }
+  }
+
+  let lastOfflineAt = null;
+  for (let i = inWindow.length - 1; i >= 0; i--) {
+    const s = inWindow[i];
+    if (!s.online && !s.maintenance) {
+      lastOfflineAt = s.at;
+      break;
+    }
+  }
+
+  return {
+    windowMs,
+    checks,
+    up,
+    down,
+    uptimePercent,
+    downDurationMs,
+    downIncidents,
+    longestDownMs,
+    avgLatencyMs,
+    state,
+    stateSinceAt,
+    lastOnlineAt,
+    lastOfflineAt,
+    lastSample: last,
+    samplesInWindow: inWindow.length,
+  };
 }
 
 async function runNodeProbeCycle() {
@@ -415,527 +613,19 @@ async function runNodeProbeCycle() {
   }
 }
 
-// ─── Render helpers ──────────────────────────────────────────────────────────
-
-function renderTimelineBars(barsData) {
-  if (!barsData.length) return '<div class="muted">No checks yet.</div>';
-  const bars = barsData.map((s, i) => {
-    const h0 = ((i * 24) / barsData.length).toFixed(1);
-    const h1 = (((i + 1) * 24) / barsData.length).toFixed(1);
-    const tip = escapeHtml(`${h0}h–${h1}h · ${s.label}`);
-    if (s.level === "mixed") {
-      const pct = Math.round((s.downRatio || 0) * 100);
-      return `<span class="bar bar-mixed" style="background:linear-gradient(to top,var(--red) ${pct}%,var(--green) ${pct}%);" title="${tip}"></span>`;
-    }
-    return `<span class="bar bar-${s.level}" title="${tip}"></span>`;
-  }).join("");
-  return `<div class="timeline">${bars}</div>`;
-}
-
-function downsampleHistoryForGraph(history, maxPoints = 260) {
-  if (!Array.isArray(history) || history.length <= maxPoints) return history || [];
-
-  const bucketSize = Math.ceil(history.length / maxPoints);
-  const reduced = [];
-
-  for (let i = 0; i < history.length; i += bucketSize) {
-    const chunk = history.slice(i, i + bucketSize);
-    if (!chunk.length) continue;
-
-    const last = chunk[chunk.length - 1];
-    const onlineLatencies = chunk
-      .filter((s) => s.online && !s.maintenance && Number.isFinite(s.latencyMs))
-      .map((s) => Number(s.latencyMs));
-
-    const downCount = chunk.filter((s) => !s.online).length;
-    const onlineCount = chunk.length - downCount;
-    const chunkOnline = onlineCount >= downCount;
-
-    let latencyMs = null;
-    if (chunkOnline && onlineLatencies.length) {
-      const avg = onlineLatencies.reduce((sum, v) => sum + v, 0) / onlineLatencies.length;
-      latencyMs = Math.round(avg);
-    }
-
-    reduced.push({
-      ts: Number(last.ts),
-      at: last.at,
-      online: chunkOnline,
-      maintenance: !!last.maintenance,
-      latencyMs,
-      error: chunkOnline ? null : (last.error || "downsampled_down"),
-    });
-  }
-
-  return reduced;
-}
-
-function getWindowAxisLabels(windowMs) {
-  const formatAgo = (ms) => {
-    const days = ms / (24 * 60 * 60 * 1000);
-    if (days >= 60) return `${Math.round(days / 30)}mo ago`;
-    if (days >= 2) return `${Math.round(days)}d ago`;
-    return `${Math.round(ms / (60 * 60 * 1000))}h ago`;
-  };
-  return {
-    start: formatAgo(windowMs),
-    mid: formatAgo(windowMs / 2),
-  };
-}
-
-function renderPingGraph(history, windowMs = DEFAULT_VIEW_WINDOW_MS) {
-  if (!history.length) return '<div class="muted small">No ping data yet.</div>';
-  const viewHistory = downsampleHistoryForGraph(history, 260);
-  const W = 760, H = 110, P = 12;
-  const latencies = viewHistory.filter((s) => s.online && !s.maintenance && Number.isFinite(s.latencyMs)).map((s) => s.latencyMs);
-  const maxLat = Math.max(150, ...(latencies.length ? latencies : [150]));
-  const uw = W - P * 2, uh = H - P * 2;
-  const stepX = viewHistory.length > 1 ? uw / (viewHistory.length - 1) : 0;
-
-  const points = viewHistory.map((s, i) => {
-    const x = P + i * stepX;
-    if (!s.online || s.maintenance || !Number.isFinite(s.latencyMs)) return { x, y: null };
-    const norm = s.latencyMs / Math.max(1, maxLat);
-    return { x, y: H - P - norm * uh };
-  });
-
-  let pathStr = "", paths = [];
-  for (const pt of points) {
-    if (pt.y == null) { if (pathStr) { paths.push(pathStr); pathStr = ""; } continue; }
-    pathStr += `${pathStr ? " L" : "M"}${pt.x.toFixed(1)} ${pt.y.toFixed(1)}`;
-  }
-  if (pathStr) paths.push(pathStr);
-
-  // fill area under line
-  const fillPaths = paths.map((d) => {
-    const first = d.match(/M([\d.]+) ([\d.]+)/);
-    const last = d.match(/.*L([\d.]+) ([\d.]+)$/) || first;
-    if (!first || !last) return "";
-    return `<path d="${d} L${last[1]} ${H - P} L${first[1]} ${H - P} Z" class="ping-fill"/>`;
-  });
-
-  // maintenance bands
-  let maintenanceBands = [], maintStart = null;
-  for (let i = 0; i < viewHistory.length; i++) {
-    if (viewHistory[i].maintenance) { if (maintStart == null) maintStart = i; }
-    else if (maintStart != null) { maintenanceBands.push({ s: maintStart, e: i - 1 }); maintStart = null; }
-  }
-  if (maintStart != null) maintenanceBands.push({ s: maintStart, e: viewHistory.length - 1 });
-
-  const maintenanceRects = maintenanceBands.map((b) => {
-    const half = Math.max(2, stepX / 2);
-    const sx = Math.max(P, P + b.s * stepX - half);
-    const ex = Math.min(W - P, P + b.e * stepX + half);
-    const maintDurationMs = Math.max(SAMPLE_INTERVAL_MS, Number(viewHistory[b.e].ts || 0) - Number(viewHistory[b.s].ts || 0));
-    const tip = escapeHtml(`${viewHistory[b.s].at} → ${viewHistory[b.e].at} · maintenance ${formatDuration(maintDurationMs)}`);
-    return `<rect x="${sx.toFixed(1)}" y="${P}" width="${Math.max(2, ex - sx).toFixed(1)}" height="${uh}" class="maintenance-band"><title>${tip}</title></rect>`;
-  }).join("");
-
-  // outage bands
-  let bands = [], outStart = null;
-  for (let i = 0; i < viewHistory.length; i++) {
-    if (!viewHistory[i].online) { if (outStart == null) outStart = i; }
-    else if (outStart != null) { bands.push({ s: outStart, e: i - 1 }); outStart = null; }
-  }
-  if (outStart != null) bands.push({ s: outStart, e: viewHistory.length - 1 });
-
-  const oRects = bands.map((b) => {
-    const half = Math.max(2, stepX / 2);
-    const sx = Math.max(P, P + b.s * stepX - half);
-    const ex = Math.min(W - P, P + b.e * stepX + half);
-    const downDurationMs = Math.max(SAMPLE_INTERVAL_MS, Number(viewHistory[b.e].ts || 0) - Number(viewHistory[b.s].ts || 0));
-    const tip = escapeHtml(`${viewHistory[b.s].at} → ${viewHistory[b.e].at} · down ${formatDuration(downDurationMs)}`);
-    return `<rect x="${sx.toFixed(1)}" y="${P}" width="${Math.max(2, ex - sx).toFixed(1)}" height="${uh}" class="outage-band"><title>${tip}</title></rect>`;
-  }).join("");
-
-  const pingDots = (viewHistory.length <= 180 ? points.filter((p) => p.y != null) : [])
-    .map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2" class="ping-dot"/>`)
-    .join("");
-
-  const hitW = Math.max(4, stepX || 4);
-  const hits = viewHistory.map((s, i) => {
-    const x = P + i * stepX - hitW / 2;
-    let tip = `${s.at} · offline${s.error ? ` (${s.error})` : ""}`;
-    if (s.maintenance) tip = `${s.at} · maintenance`;
-    else if (s.online && Number.isFinite(s.latencyMs)) tip = `${s.at} · ${s.latencyMs}ms`;
-    return `<rect x="${x.toFixed(1)}" y="${P}" width="${hitW.toFixed(1)}" height="${uh}" fill="transparent"><title>${escapeHtml(tip)}</title></rect>`;
-  }).join("");
-
-  const gridY = [P, H / 2, H - P];
-  const gridLabels = [maxLat, Math.round(maxLat / 2), 0].map((v, i) =>
-    `<text x="${W - P - 2}" y="${gridY[i] + 4}" class="axis-lbl">${v}ms</text>`
-  ).join("");
-
-  const gridLines = gridY.map((y) => `<line x1="${P}" y1="${y}" x2="${W - P}" y2="${y}" class="grid-line"/>`).join("");
-
-  return `<div class="graph-wrap">
-    <svg class="ping-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-      <defs>
-        <linearGradient id="fillGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#5a7dff" stop-opacity="0.35"/>
-          <stop offset="100%" stop-color="#5a7dff" stop-opacity="0.02"/>
-        </linearGradient>
-      </defs>
-      ${gridLines}${maintenanceRects}${oRects}
-      ${fillPaths.join("")}
-      ${paths.map((d) => `<path d="${d}" class="ping-line"/>`).join("")}
-      ${pingDots}${gridLabels}${hits}
-    </svg>
-    <div class="graph-scale"><span>${getWindowAxisLabels(windowMs).start}</span><span>${getWindowAxisLabels(windowMs).mid}</span><span>Now</span></div>
-  </div>`;
-}
-
-function statusBadge(label) {
-  const cls = label === "Operational" ? "badge-ok" : label === "Maintenance" ? "badge-warn" : "badge-bad";
-  const dot = label === "Operational" ? "dot-ok" : label === "Maintenance" ? "dot-warn" : "dot-bad";
-  return `<span class="badge ${cls}"><span class="dot ${dot}"></span>${label}</span>`;
-}
-
-function renderNodeCard(node, windowMs = DEFAULT_VIEW_WINDOW_MS, rangeLabel = "24h") {
-  const timeline = renderTimelineBars(node.uptimeBars || []);
-  const graph = renderPingGraph(node.history || [], windowMs);
-  const pingDisplay = node.latencyMs != null ? `${node.latencyMs}ms` : "—";
-  const avgPingDisplay = node.avgLatencyMs != null ? `${node.avgLatencyMs}ms` : "—";
-  const checkedAtDisplay = node.lastCheckedAt ? new Date(node.lastCheckedAt).toLocaleTimeString() : "—";
-  const axis = getWindowAxisLabels(windowMs);
-
-  return `<div class="node-card">
-    <div class="node-head">
-      <div class="node-title">
-        <span class="node-name">${escapeHtml(node.name)}</span>
-        <span class="node-id">#${node.id}</span>
-      </div>
-      ${statusBadge(node.statusLabel)}
-    </div>
-    <div class="node-fqdn">${escapeHtml(node.fqdn || "No FQDN")}</div>
-    <div class="node-stats">
-      <div class="stat-chip"><span class="chip-label">RAM</span><span class="chip-val">${(node.memoryMb / 1024).toFixed(1)} GB</span></div>
-      <div class="stat-chip"><span class="chip-label">Disk</span><span class="chip-val">${(node.diskMb / 1024).toFixed(0)} GB</span></div>
-      <div class="stat-chip"><span class="chip-label">Ping</span><span class="chip-val">${pingDisplay}</span></div>
-      <div class="stat-chip"><span class="chip-label">Avg Ping</span><span class="chip-val">${avgPingDisplay}</span></div>
-      <div class="stat-chip"><span class="chip-label">Uptime ${rangeLabel}</span><span class="chip-val">${node.uptimePercent}%</span></div>
-      <div class="stat-chip"><span class="chip-label">Checks</span><span class="chip-val">${node.checks}</span></div>
-      <div class="stat-chip"><span class="chip-label">Incidents</span><span class="chip-val">${node.downIncidents}</span></div>
-      <div class="stat-chip"><span class="chip-label">Downtime</span><span class="chip-val">${formatDuration(node.downDurationMs)}</span></div>
-      <div class="stat-chip"><span class="chip-label">Longest Outage</span><span class="chip-val">${formatDuration(node.longestDownMs)}</span></div>
-      <div class="stat-chip"><span class="chip-label">Last Check</span><span class="chip-val">${checkedAtDisplay}</span></div>
-    </div>
-    ${graph}
-    <div class="timeline-wrap">
-      ${timeline}
-      <div class="timeline-meta"><span>${axis.start}</span><span class="uptime-pct">${node.uptimePercent}% uptime</span><span>Now</span></div>
-    </div>
-  </div>`;
-}
-
-function renderStatusPage(stats, nodes, nodeError, lastNodeUpdate) {
-  const rangeLabel = getRangeLabel(DEFAULT_VIEW_WINDOW_MS);
-  const allOnline = nodes.every((n) => n.statusLabel === "Operational" || n.statusLabel === "Maintenance");
-  const anyDown = nodes.some((n) => n.statusLabel === "Offline");
-  const overallLabel = anyDown ? "Partial Outage" : allOnline ? "All Systems Operational" : "Checking…";
-  const overallClass = anyDown ? "overall-bad" : "overall-ok";
-  const operationalNodes = nodes.filter((n) => n.statusLabel === "Operational").length;
-  const maintenanceNodes = nodes.filter((n) => n.statusLabel === "Maintenance").length;
-  const offlineNodes = nodes.filter((n) => n.statusLabel === "Offline").length;
-  const onlineNodes = operationalNodes + maintenanceNodes;
-  const nodeAvailabilityPct = nodes.length ? Math.round((onlineNodes / nodes.length) * 100) : 0;
-  const fleetAvgUptime = nodes.length
-    ? (nodes.reduce((sum, n) => sum + Number(n.uptimePercent || 0), 0) / nodes.length).toFixed(2)
-    : "0.00";
-  const fleetAvgPingValues = nodes.map((n) => n.avgLatencyMs).filter((v) => Number.isFinite(v));
-  const fleetAvgPing = fleetAvgPingValues.length
-    ? `${Math.round(fleetAvgPingValues.reduce((sum, v) => sum + v, 0) / fleetAvgPingValues.length)}ms`
-    : "—";
-  const initialPayload = JSON.stringify({
-    ...stats,
-    monitor: {
-      sampleIntervalMs: SAMPLE_INTERVAL_MS,
-      rangeWindowMs: DEFAULT_VIEW_WINDOW_MS,
-      rangeLabel,
-      maxRangeWindowMs: MAX_HISTORY_WINDOW_MS,
-      lastUpdated: lastNodeUpdate,
-      lastError: nodeError || null,
-      persistenceEnabled: nodeMonitor.persistenceEnabled,
-    },
-    nodes,
-  }).replace(/</g, "\\u003c");
-  const nodeCards = nodeError
-    ? `<div class="error-box">⚠ Failed to load node data: ${escapeHtml(nodeError)}</div>`
-    : (nodes.length ? nodes.map((node) => renderNodeCard(node, DEFAULT_VIEW_WINDOW_MS, rangeLabel)).join("") : '<div class="muted">No nodes found.</div>');
-
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Status — Discord Bot</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --bg: #06090f;
-      --surface: #0d1420;
-      --surface-2: #111b2c;
-      --border: #1e2d44;
-      --border-2: #28394f;
-      --text: #dde8f8;
-      --muted: #7a90b4;
-      --muted-2: #4a5f80;
-      --green: #2ee87a;
-      --green-glow: rgba(46,232,122,0.18);
-      --red: #ff5757;
-      --amber: #ffb347;
-      --blue: #4f8eff;
-      --blue-glow: rgba(79,142,255,0.2);
-      --radius: 14px;
-      --radius-sm: 8px;
-    }
-    body {
-      font-family: "Inter", "Segoe UI", system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      padding: 32px 20px 64px;
-      min-height: 100vh;
-    }
-    .wrap { max-width: 960px; margin: 0 auto; display: grid; gap: 20px; }
-
-    /* Overall status banner */
-    .overall-banner {
-      padding: 20px 24px;
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-      display: flex; align-items: center; gap: 16px;
-    }
-    .overall-ok { background: linear-gradient(135deg, #06160e 0%, #091220 100%); border-color: rgba(46,232,122,0.3); }
-    .overall-bad { background: linear-gradient(135deg, #160808 0%, #0d1220 100%); border-color: rgba(255,87,87,0.3); }
-    .overall-icon { font-size: 28px; }
-    .overall-text h2 { font-size: 20px; font-weight: 700; }
-    .overall-ok .overall-text h2 { color: var(--green); }
-    .overall-bad .overall-text h2 { color: var(--red); }
-    .overall-text p { color: var(--muted); font-size: 13px; margin-top: 3px; }
-
-    /* Cards */
-    .card {
-      background: linear-gradient(160deg, var(--surface) 0%, var(--surface-2) 100%);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
-    }
-    .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 16px; }
-
-    /* Bot stats grid */
-    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-    .stat-block { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; }
-    .stat-block .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 6px; }
-    .stat-block .value { font-size: 22px; font-weight: 700; }
-    .value-ok { color: var(--green); }
-    .value-warn { color: var(--amber); }
-    .value-muted { color: var(--muted); font-size: 14px !important; font-weight: 500 !important; }
-
-    /* Cluster bar */
-    .cluster-bar-wrap { margin-top: 14px; }
-    .cluster-bar-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-    .cluster-bar-track { height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; }
-    .cluster-bar-fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--green)); border-radius: 99px; transition: width .4s ease; }
-
-    /* Fleet quick summary */
-    .fleet-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-      margin-top: 14px;
-    }
-    .fleet-pill {
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: #08101c;
-      padding: 10px 12px;
-    }
-    .fleet-pill .k { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 4px; }
-    .fleet-pill .v { font-size: 18px; font-weight: 700; color: var(--text); }
-    .fleet-pill .v.ok { color: var(--green); }
-    .fleet-pill .v.warn { color: var(--amber); }
-    .fleet-pill .v.bad { color: var(--red); }
-
-    /* Badge */
-    .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
-    .badge-ok { background: rgba(46,232,122,0.12); color: var(--green); border: 1px solid rgba(46,232,122,0.25); }
-    .badge-warn { background: rgba(255,179,71,0.12); color: var(--amber); border: 1px solid rgba(255,179,71,0.25); }
-    .badge-bad { background: rgba(255,87,87,0.12); color: var(--red); border: 1px solid rgba(255,87,87,0.3); }
-    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-    .dot-ok { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
-    .dot-warn { background: var(--amber); }
-    .dot-bad { background: var(--red); box-shadow: 0 0 6px var(--red); animation: pulse-red 1.4s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
-    @keyframes pulse-red { 0%,100%{opacity:1;box-shadow:0 0 6px var(--red);} 50%{opacity:0.6;box-shadow:0 0 12px var(--red);} }
-
-    /* Node cards */
-    .nodes-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
-    .nodes-section h2 { font-size: 16px; font-weight: 700; margin-bottom: 0; }
-    .range-control { display: inline-flex; align-items: center; gap: 8px; }
-    .range-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
-    .range-select {
-      background: #091221;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 7px;
-      font-size: 12px;
-      padding: 6px 8px;
-    }
-    .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
-    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-    .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
-
-    .node-card {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px;
-      margin-bottom: 12px;
-      transition: border-color .2s;
-    }
-    .node-card:last-child { margin-bottom: 0; }
-    .node-card:hover { border-color: var(--border-2); }
-    .node-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
-    .node-title { display: flex; align-items: baseline; gap: 8px; }
-    .node-name { font-size: 15px; font-weight: 700; }
-    .node-id { font-size: 11px; color: var(--muted-2); background: var(--surface); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; }
-    .node-fqdn { font-size: 12px; color: var(--muted); margin-bottom: 10px; font-family: "SF Mono", "Fira Code", monospace; }
-
-    /* Stat chips */
-    .node-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-    .stat-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; font-size: 12px; display: flex; gap: 6px; align-items: center; }
-    .chip-label { color: var(--muted); }
-    .chip-val { font-weight: 600; color: var(--text); }
-
-    /* Graph */
-    .graph-wrap { margin-bottom: 12px; }
-    .ping-svg { width: 100%; height: 110px; display: block; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #050a14; }
-    .grid-line { stroke: #1a2740; stroke-width: 1; }
-    .outage-band { fill: rgba(255,87,87,0.18); stroke: rgba(255,87,87,0.4); stroke-width: .8; }
-    .maintenance-band { fill: rgba(255,179,71,0.18); stroke: rgba(255,179,71,0.45); stroke-width: .8; }
-    .ping-fill { fill: url(#fillGrad); }
-    .ping-line { fill: none; stroke: var(--blue); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
-    .ping-dot { fill: #c6d8ff; opacity: 0.2; }
-    .axis-lbl { fill: var(--muted-2); font-size: 9px; text-anchor: end; font-family: monospace; }
-    .graph-scale { display: flex; justify-content: space-between; margin-top: 5px; font-size: 11px; color: var(--muted-2); }
-
-    /* Timeline */
-    .timeline-wrap { margin-top: 8px; }
-    .timeline { display: flex; gap: 3px; height: 56px; border-radius: 6px; overflow: hidden; align-items: stretch; }
-    .bar { flex: 1 1 0; min-width: 6px; display: block; border-radius: 3px; transition: opacity .1s; }
-    .bar:hover { opacity: .75; filter: brightness(1.3); }
-    .bar-up { background: linear-gradient(to bottom, #3eff8b, var(--green)); opacity: .9; }
-    .bar-down { background: linear-gradient(to bottom, #ff7070, var(--red)); }
-    .bar-maint { background: linear-gradient(to bottom, #ffd080, var(--amber)); }
-    .bar-mixed { }
-    .bar-none { background: #131e2e; }
-    .timeline-meta { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; color: var(--muted-2); }
-    .uptime-pct { color: var(--text); font-weight: 700; font-size: 12px; }
-
-    /* Error box */
-    .error-box { background: rgba(255,87,87,0.08); border: 1px solid rgba(255,87,87,0.3); border-radius: var(--radius-sm); padding: 14px 16px; color: #ff8888; font-size: 13px; }
-
-    .muted { color: var(--muted); }
-    .small { font-size: 12px; }
-
-    /* Auto-refresh indicator */
-    .refresh-bar { height: 2px; background: var(--border); border-radius: 99px; overflow: hidden; margin-top: 16px; }
-    .refresh-fill { height: 100%; background: var(--blue); border-radius: 99px; animation: shrink ${SAMPLE_INTERVAL_MS}ms linear infinite; transform-origin: left; }
-    @keyframes shrink { from{width:100%} to{width:0%} }
-
-    @media(max-width:600px) {
-      .stats-grid { grid-template-columns: 1fr 1fr; }
-      .node-stats { gap: 5px; }
-    }
-  </style>
-</head>
-<body>
-<div class="wrap">
-
-  <div id="overall-banner" class="overall-banner ${overallClass}">
-    <div id="overall-icon" class="overall-icon">${anyDown ? "⚠️" : "✅"}</div>
-    <div class="overall-text">
-      <h2 id="overall-label">${overallLabel}</h2>
-      <p id="overall-sub">Last checked ${lastNodeUpdate ? new Date(lastNodeUpdate).toLocaleTimeString() : "—"} &nbsp;·&nbsp; Auto-updating every ${SAMPLE_INTERVAL_MS / 1000}s</p>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">Web Monitor Health</div>
-    <div class="stats-grid">
-      <div class="stat-block">
-        <div class="label">Status</div>
-        <div id="metric-status" class="value ${stats.status === "ok" ? "value-ok" : "value-warn"}">${stats.status === "ok" ? "Online" : "Degraded"}</div>
-      </div>
-      <div class="stat-block">
-        <div class="label">Monitor Uptime</div>
-        <div id="metric-uptime" class="value value-ok">${formatUptime(stats.uptimeSeconds)}</div>
-      </div>
-      <div class="stat-block">
-        <div class="label">Nodes Online</div>
-        <div id="metric-nodes-online" class="value">${onlineNodes}<span style="font-size:14px;color:var(--muted)">/${nodes.length}</span></div>
-      </div>
-    </div>
-    <div class="fleet-grid">
-      <div class="fleet-pill"><span class="k">Operational</span><span id="metric-operational" class="v ok">${operationalNodes}</span></div>
-      <div class="fleet-pill"><span class="k">Maintenance</span><span id="metric-maintenance" class="v warn">${maintenanceNodes}</span></div>
-      <div class="fleet-pill"><span class="k">Offline</span><span id="metric-offline" class="v bad">${offlineNodes}</span></div>
-      <div class="fleet-pill"><span class="k">Fleet Avg Uptime</span><span id="metric-fleet-uptime" class="v">${fleetAvgUptime}%</span></div>
-      <div class="fleet-pill"><span class="k">Fleet Avg Ping</span><span id="metric-fleet-ping" class="v">${fleetAvgPing}</span></div>
-    </div>
-    <div class="cluster-bar-wrap">
-      <div class="cluster-bar-label"><span>Node availability</span><span id="metric-availability">${nodeAvailabilityPct}%</span></div>
-      <div class="cluster-bar-track"><div id="metric-availability-bar" class="cluster-bar-fill" style="width:${nodeAvailabilityPct}%"></div></div>
-    </div>
-    <div class="refresh-bar"><div class="refresh-fill"></div></div>
-  </div>
-
-  <div class="card nodes-section">
-    <div class="nodes-head">
-      <h2>Node Status</h2>
-      <div class="range-control">
-        <span class="range-label">Range</span>
-        <select id="range-select" class="range-select">
-          <option value="24h" selected>24h</option>
-          <option value="7d">7d</option>
-        </select>
-      </div>
-    </div>
-    <div class="legend">
-      <span class="legend-item"><span class="legend-dot" style="background:var(--green);"></span>Operational</span>
-      <span class="legend-item"><span class="legend-dot" style="background:var(--red);"></span>Down</span>
-      <span class="legend-item"><span class="legend-dot" style="background:var(--amber);"></span>Maintenance</span>
-      <span class="legend-item"><span class="legend-dot" style="background:#8866ff;"></span>Intermittent</span>
-      <span class="legend-item"><span class="legend-dot" style="background:#1a2535;"></span>No data</span>
-    </div>
-    <div id="nodes-root">${nodeCards}</div>
-  </div>
-
-</div>
-<script>
-  window.__STATUS_INITIAL__ = ${initialPayload};
-</script>
-<script src="/client.js"></script>
-</body>
-</html>`;
-}
-
-function getMaxSamplesForWindow(windowMs) {
-  if (windowMs >= RANGE_MAP["7d"]) return 360;
-  return 260;
-}
-
 async function loadNodeHistoryWindow(nodeId, fallbackHistory, windowMs) {
   const cutoff = Date.now() - windowMs;
 
   if (!historyDb || windowMs <= IN_MEMORY_WINDOW_MS) {
     const local = (fallbackHistory || []).filter((s) => Number(s.ts) >= cutoff);
-    return downsampleHistoryForGraph(local, getMaxSamplesForWindow(windowMs));
+    const raw = local.slice().sort((a, b) => Number(a.ts) - Number(b.ts));
+    const graph = downsampleHistory(raw, getMaxSamplesForWindow(windowMs));
+    return { raw, graph, source: "memory" };
   }
 
   const rows = await dbAll(
     `
-      SELECT ts, at, online, maintenance, latencyMs, error
+      SELECT ts, at, online, maintenance, latencyMs, statusCode, probeUrl, error
       FROM node_ping_history
       WHERE nodeId = ? AND ts >= ?
       ORDER BY ts ASC
@@ -943,70 +633,277 @@ async function loadNodeHistoryWindow(nodeId, fallbackHistory, windowMs) {
     [nodeId, cutoff]
   );
 
-  const hydrated = rows.map(hydrateHistoryRow);
-  return downsampleHistoryForGraph(hydrated, getMaxSamplesForWindow(windowMs));
+  const raw = rows.map(hydrateHistoryRow);
+  const graph = downsampleHistory(raw, getMaxSamplesForWindow(windowMs));
+  return { raw, graph, source: "db" };
 }
 
-async function buildNodePayload(windowMs = DEFAULT_VIEW_WINDOW_MS) {
-  const baseNodes = [...nodeMonitor.nodes.values()];
+function parseIncludes(searchParams) {
+  const set = new Set();
+
+  const include = String(searchParams.get("include") || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  for (const i of include) set.add(i);
+
+  const history = String(searchParams.get("history") || "").toLowerCase();
+  if (history === "1" || history === "true") set.add("history");
+
+  const rawHistory = String(searchParams.get("historyRaw") || "").toLowerCase();
+  if (rawHistory === "1" || rawHistory === "true") set.add("historyraw");
+
+  const bars = String(searchParams.get("uptimeBars") || "").toLowerCase();
+  if (bars === "1" || bars === "true") set.add("uptimebars");
+
+  return set;
+}
+
+async function buildNodePayload(windowMs = DEFAULT_VIEW_WINDOW_MS, options = {}) {
+  const includeHistory = !!options.includeHistory;
+  const includeHistoryRaw = !!options.includeHistoryRaw;
+  const includeUptimeBars = !!options.includeUptimeBars;
+  const nodeIdSet = Array.isArray(options.nodeIds) ? new Set(options.nodeIds.map((v) => Number(v))) : null;
+
+  const baseNodes = [...nodeMonitor.nodes.values()].filter((n) => {
+    if (!nodeIdSet) return true;
+    return nodeIdSet.has(Number(n.id));
+  });
+
   const hydrated = await Promise.all(baseNodes.map(async (entry) => {
-    const history = await loadNodeHistoryWindow(entry.id, entry.history || [], windowMs);
-    return computeNodeView({ ...entry, history }, windowMs);
+    const { raw, graph, source } = await loadNodeHistoryWindow(entry.id, entry.history || [], windowMs);
+    const stats = computeNodeWindowStats(raw, windowMs);
+
+    const last = stats.lastSample;
+    const probeUrl = entry.probeUrl || last?.probeUrl || null;
+
+    const payload = {
+      id: entry.id,
+      name: entry.name,
+      fqdn: entry.fqdn,
+      panel: entry.panel || null,
+      resources: {
+        memoryMb: Number(entry.memoryMb) || 0,
+        memoryGb: Number.isFinite(Number(entry.memoryMb)) ? Number((Number(entry.memoryMb) / 1024).toFixed(2)) : null,
+        diskMb: Number(entry.diskMb) || 0,
+        diskGb: Number.isFinite(Number(entry.diskMb)) ? Number((Number(entry.diskMb) / 1024).toFixed(2)) : null,
+      },
+      probe: {
+        target: entry.probeTarget || null,
+        url: probeUrl,
+        source,
+      },
+      status: {
+        state: stats.state,
+        sinceAt: stats.stateSinceAt,
+        checkedAt: last?.at || entry.lastCheckedAt || null,
+        online: last ? !!last.online : null,
+        maintenance: last ? !!last.maintenance : !!entry.maintenance,
+        latencyMs: last?.latencyMs ?? null,
+        avgLatencyMs: stats.avgLatencyMs,
+        statusCode: last?.statusCode ?? entry.statusCode ?? null,
+        error: last?.error ?? null,
+        lastOnlineAt: stats.lastOnlineAt,
+        lastOfflineAt: stats.lastOfflineAt,
+      },
+      metrics: {
+        windowMs,
+        range: getRangeLabel(windowMs),
+        samples: stats.samplesInWindow,
+        checks: stats.checks,
+        up: stats.up,
+        down: stats.down,
+        uptimePercent: stats.uptimePercent,
+        downDurationMs: stats.downDurationMs,
+        downIncidents: stats.downIncidents,
+        longestDownMs: stats.longestDownMs,
+      },
+    };
+
+    if (includeUptimeBars) {
+      payload.uptimeBars = computeUptimeBars(raw, windowMs);
+    }
+
+    if (includeHistoryRaw) {
+      payload.historyRaw = raw;
+    } else if (includeHistory) {
+      payload.history = graph;
+    }
+
+    payload.historyMeta = {
+      rawSamples: raw.length,
+      returnedSamples: includeHistoryRaw ? raw.length : includeHistory ? graph.length : 0,
+      downsampled: includeHistory && !includeHistoryRaw,
+      windowMs,
+    };
+
+    return payload;
   }));
 
   return hydrated.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
+function setCorsHeaders(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
+
+function sendJson(res, statusCode, payload, extraHeaders = {}) {
+  setCorsHeaders(res);
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    ...extraHeaders,
+  });
+  res.end(JSON.stringify(payload));
+}
+
+function buildMonitorMeta(windowMs) {
+  return {
+    sampleIntervalMs: SAMPLE_INTERVAL_MS,
+    rangeWindowMs: windowMs,
+    rangeLabel: getRangeLabel(windowMs),
+    maxRangeWindowMs: MAX_HISTORY_WINDOW_MS,
+    lastUpdated: nodeMonitor.lastUpdated,
+    lastError: nodeMonitor.lastError,
+    persistenceEnabled: nodeMonitor.persistenceEnabled,
+  };
+}
+
+function computeFleetSummary(nodes) {
+  const summary = {
+    total: Array.isArray(nodes) ? nodes.length : 0,
+    operational: 0,
+    offline: 0,
+    maintenance: 0,
+    unknown: 0,
+    avgUptimePercent: null,
+    avgLatencyMs: null,
+  };
+
+  const uptimeVals = [];
+  const latencyVals = [];
+
+  for (const n of nodes || []) {
+    const state = n?.status?.state || "unknown";
+    if (state === "operational") summary.operational++;
+    else if (state === "maintenance") summary.maintenance++;
+    else if (state === "offline") summary.offline++;
+    else summary.unknown++;
+
+    const up = n?.metrics?.uptimePercent;
+    if (Number.isFinite(up)) uptimeVals.push(Number(up));
+
+    const lat = n?.status?.avgLatencyMs;
+    if (Number.isFinite(lat)) latencyVals.push(Number(lat));
+  }
+
+  if (uptimeVals.length) {
+    summary.avgUptimePercent = Number((uptimeVals.reduce((a, b) => a + b, 0) / uptimeVals.length).toFixed(2));
+  }
+  if (latencyVals.length) {
+    summary.avgLatencyMs = Math.round(latencyVals.reduce((a, b) => a + b, 0) / latencyVals.length);
+  }
+
+  return summary;
+}
+
 const statusServer = http.createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${STATUS_PORT}`}`);
+
+    if (req.method === "OPTIONS") {
+      setCorsHeaders(res);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    if (req.method !== "GET") {
+      sendJson(res, 405, { error: "method_not_allowed" }, { Allow: "GET, OPTIONS" });
+      return;
+    }
+
     const stats = getServiceStats();
     const rangeWindowMs = resolveRangeWindow(requestUrl.searchParams.get("range"));
-    const rangeLabel = getRangeLabel(rangeWindowMs);
+    const includes = parseIncludes(requestUrl.searchParams);
 
-    if (requestUrl.pathname === "/client.js") {
-      const clientScriptPath = path.join(__dirname, "client.js");
-      const script = fs.readFileSync(clientScriptPath, "utf8");
-      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
-      res.end(script);
+    const includeHistory = includes.has("history");
+    const includeHistoryRaw = includes.has("historyraw");
+    const includeUptimeBars = includes.has("uptimebars");
+
+    if (requestUrl.pathname === "/api/health") {
+      sendJson(res, 200, {
+        ...stats,
+        monitor: buildMonitorMeta(rangeWindowMs),
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/nodes") {
+      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory, includeHistoryRaw, includeUptimeBars });
+      sendJson(res, 200, {
+        monitor: buildMonitorMeta(rangeWindowMs),
+        summary: computeFleetSummary(nodes),
+        nodes,
+      });
+      return;
+    }
+
+    if (requestUrl.pathname.startsWith("/api/nodes/")) {
+      const idStr = requestUrl.pathname.split("/").filter(Boolean)[2];
+      const nodeId = Number(idStr);
+      if (!Number.isFinite(nodeId)) {
+        sendJson(res, 400, { error: "bad_request", message: "Invalid node id" });
+        return;
+      }
+      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory: true, includeHistoryRaw, includeUptimeBars, nodeIds: [nodeId] });
+      if (!nodes.length) {
+        sendJson(res, 404, { error: "not_found", message: `Node ${nodeId} not found` });
+        return;
+      }
+      sendJson(res, 200, {
+        monitor: buildMonitorMeta(rangeWindowMs),
+        node: nodes[0],
+      });
       return;
     }
 
     if (requestUrl.pathname === "/api/status") {
-      const nodes = await buildNodePayload(rangeWindowMs);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({
+      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory, includeHistoryRaw, includeUptimeBars });
+      sendJson(res, 200, {
         ...stats,
-        monitor: {
-          sampleIntervalMs: SAMPLE_INTERVAL_MS,
-          rangeWindowMs,
-          rangeLabel,
-          maxRangeWindowMs: MAX_HISTORY_WINDOW_MS,
-          lastUpdated: nodeMonitor.lastUpdated,
-          lastError: nodeMonitor.lastError,
-          persistenceEnabled: nodeMonitor.persistenceEnabled,
-        },
+        monitor: buildMonitorMeta(rangeWindowMs),
+        summary: computeFleetSummary(nodes),
         nodes,
-      }));
+      });
       return;
     }
 
     if (requestUrl.pathname === "/" || requestUrl.pathname === "/status") {
-      const nodes = await buildNodePayload(DEFAULT_VIEW_WINDOW_MS);
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(renderStatusPage(stats, nodes, nodeMonitor.lastError, nodeMonitor.lastUpdated));
+      sendJson(res, 200, {
+        ...stats,
+        monitor: buildMonitorMeta(rangeWindowMs),
+        endpoints: {
+          health: "/api/health",
+          nodes: "/api/nodes",
+          node: "/api/nodes/:id",
+          status: "/api/status",
+        },
+        note: "This service is API-only (no HTML dashboard).",
+      });
       return;
     }
 
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not Found");
+    sendJson(res, 404, { error: "not_found" });
   } catch (err) {
-    res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ error: err.message || "Internal error" }));
+    sendJson(res, 500, { error: "internal_error", message: err.message || "Internal error" });
   }
 });
 
-statusServer.listen(STATUS_PORT, () => console.log(`Status page → http://localhost:${STATUS_PORT}`));
+statusServer.listen(STATUS_PORT, () => console.log(`Status API → http://localhost:${STATUS_PORT}`));
 
 async function bootstrap() {
   try {

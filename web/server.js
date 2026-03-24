@@ -13,6 +13,8 @@ const IN_MEMORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_VIEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DB_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_DAY_OFFSET = 6;
 
 const RANGE_MAP = {
   "24h": 24 * 60 * 60 * 1000,
@@ -27,6 +29,25 @@ function resolveRangeWindow(rawRange) {
 function getRangeLabel(windowMs) {
   if (windowMs >= RANGE_MAP["7d"]) return "7d";
   return "24h";
+}
+
+function clampDayOffset(rawValue) {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(MAX_DAY_OFFSET, Math.trunc(parsed)));
+}
+
+function getDayWindow(dayOffset = 0, nowTs = Date.now()) {
+  const offset = clampDayOffset(dayOffset);
+  const now = new Date(nowTs);
+  const utcStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const start = utcStart - offset * DAY_MS;
+  return { start, end: start + DAY_MS, offset };
+}
+
+function getDayLabel(startTs) {
+  const date = new Date(startTs);
+  return date.toISOString().slice(0, 10);
 }
 
 const HISTORY_DB_DIR = path.join(__dirname, "data");
@@ -743,6 +764,65 @@ async function buildNodePayload(windowMs = DEFAULT_VIEW_WINDOW_MS, options = {})
   return hydrated.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
+function buildNodeInfo(entry) {
+  return {
+    id: entry.id,
+    name: entry.name,
+    fqdn: entry.fqdn,
+    maintenance: !!entry.maintenance,
+  };
+}
+
+async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw) {
+  const { raw, graph, source } = await loadNodeHistoryWindow(nodeId, entry.history || [], rangeWindowMs);
+  const stats = computeNodeWindowStats(raw, rangeWindowMs);
+  const uptimeBars = computeUptimeBars(raw, rangeWindowMs);
+  const payload = {
+    node: buildNodeInfo(entry),
+    nodeId,
+    rangeWindowMs,
+    rangeLabel: getRangeLabel(rangeWindowMs),
+    stats,
+    uptimeBars,
+    historyMeta: {
+      rawSamples: raw.length,
+      returnedSamples: includeHistoryRaw ? raw.length : includeHistory ? graph.length : 0,
+      downsampled: includeHistory && !includeHistoryRaw,
+      windowMs: rangeWindowMs,
+      source,
+    },
+  };
+
+  if (includeHistory) {
+    payload.history = graph;
+  }
+  if (includeHistoryRaw) {
+    payload.historyRaw = raw;
+  }
+
+  return payload;
+}
+
+async function buildNodeDayUptimePayload(entry, nodeId, dayOffset) {
+  const { raw } = await loadNodeHistoryWindow(nodeId, entry.history || [], MAX_HISTORY_WINDOW_MS);
+  const { start, end, offset } = getDayWindow(dayOffset);
+  const daySamples = raw.filter((sample) => Number(sample.ts) >= start && Number(sample.ts) < end);
+  const windowMs = end - start;
+  const stats = computeNodeWindowStats(daySamples, windowMs, end);
+  const throughput = computeUptimeBars(daySamples, windowMs);
+
+  return {
+    node: buildNodeInfo(entry),
+    nodeId,
+    dayOffset: offset,
+    dayLabel: getDayLabel(start),
+    windowMs,
+    stats,
+    uptimeBars: throughput,
+    sampleCount: daySamples.length,
+  };
+}
+
 function setCorsHeaders(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
@@ -813,6 +893,7 @@ function computeFleetSummary(nodes) {
 const statusServer = http.createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${STATUS_PORT}`}`);
+    const segments = requestUrl.pathname.split("/").filter(Boolean);
 
     if (req.method === "OPTIONS") {
       setCorsHeaders(res);
@@ -852,22 +933,58 @@ const statusServer = http.createServer(async (req, res) => {
       return;
     }
 
-    if (requestUrl.pathname.startsWith("/api/nodes/")) {
-      const idStr = requestUrl.pathname.split("/").filter(Boolean)[2];
-      const nodeId = Number(idStr);
-      if (!Number.isFinite(nodeId)) {
-        sendJson(res, 400, { error: "bad_request", message: "Invalid node id" });
+    if (
+      segments[0] === "api" &&
+      segments[1] === "nodes" &&
+      Number.isFinite(Number(segments[2]))
+    ) {
+      const nodeId = Number(segments[2]);
+      const tail = segments[3] || null;
+      const entry = nodeMonitor.nodes.get(nodeId);
+
+      if (!entry) {
+        sendJson(res, 404, { error: "not_found", message: `Node ${nodeId} not monitored` });
         return;
       }
-      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory: true, includeHistoryRaw, includeUptimeBars, nodeIds: [nodeId] });
-      if (!nodes.length) {
-        sendJson(res, 404, { error: "not_found", message: `Node ${nodeId} not found` });
+
+      if (tail === "ping-history") {
+        const payload = await buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw);
+        sendJson(res, 200, {
+          monitor: buildMonitorMeta(rangeWindowMs),
+          ...payload,
+        });
         return;
       }
-      sendJson(res, 200, {
-        monitor: buildMonitorMeta(rangeWindowMs),
-        node: nodes[0],
-      });
+
+      if (tail === "uptime-bar") {
+        const dayOffset = clampDayOffset(requestUrl.searchParams.get("day"));
+        const payload = await buildNodeDayUptimePayload(entry, nodeId, dayOffset);
+        sendJson(res, 200, {
+          monitor: buildMonitorMeta(DAY_MS),
+          ...payload,
+        });
+        return;
+      }
+
+      if (!tail) {
+        const nodes = await buildNodePayload(rangeWindowMs, {
+          includeHistory: true,
+          includeHistoryRaw,
+          includeUptimeBars,
+          nodeIds: [nodeId],
+        });
+        if (!nodes.length) {
+          sendJson(res, 404, { error: "not_found", message: `Node ${nodeId} not found` });
+          return;
+        }
+        sendJson(res, 200, {
+          monitor: buildMonitorMeta(rangeWindowMs),
+          node: nodes[0],
+        });
+        return;
+      }
+
+      sendJson(res, 404, { error: "not_found", message: `Unknown node sub-route ${tail}` });
       return;
     }
 

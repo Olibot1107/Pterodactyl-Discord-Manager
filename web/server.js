@@ -487,8 +487,8 @@ function computeUptimeBars(samples, windowMs, options = {}) {
 
   if (!Number.isFinite(startTs) || !Number.isFinite(endTs) || endTs <= startTs) return [];
 
-  const BUCKET_15M_MS = 15 * 60 * 1000;
-  const bucketSizeMs = Number.isFinite(Number(options.bucketSizeMs)) ? Number(options.bucketSizeMs) : BUCKET_15M_MS;
+  const BUCKET_1H_MS = 60 * 60 * 1000;
+  const bucketSizeMs = Number.isFinite(Number(options.bucketSizeMs)) ? Number(options.bucketSizeMs) : BUCKET_1H_MS;
   const bucketCount = Math.max(1, Math.ceil((endTs - startTs) / bucketSizeMs));
 
   const buckets = Array.from({ length: bucketCount }, () => ({ total: 0, up: 0, down: 0, maintenance: 0 }));

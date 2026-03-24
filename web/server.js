@@ -515,8 +515,9 @@ function computeUptimeBars(samples, windowMs, options = {}) {
     const fromAt = new Date(fromTs).toISOString();
     const toAt = new Date(toTs).toISOString();
 
+    const hasMaintenance = b.maintenance > 0;
     if (b.total === 0) {
-      const state = b.maintenance > 0 ? "maintenance" : "unknown";
+      const state = hasMaintenance ? "maintenance" : "unknown";
       return {
         state,
         fromAt,
@@ -530,23 +531,25 @@ function computeUptimeBars(samples, windowMs, options = {}) {
         level: "none",
         uptime: null,
         downRatio: 0,
-        label: b.maintenance > 0 ? "Maintenance" : "No data",
+        label: hasMaintenance ? "Maintenance" : "No data",
       };
     }
 
     const uptimeRatio = b.up / b.total;
     const downRatio = b.down / b.total;
-    const uptimePercent = Number(((uptimeRatio || 0) * 100).toFixed(2));
+    const uptimePercent = hasMaintenance ? null : Number(((uptimeRatio || 0) * 100).toFixed(2));
 
     let level = "mixed";
     if (downRatio === 0) level = "up";
     else if (downRatio === 1) level = "down";
 
-    const state = level === "up" ? "operational" : level === "down" ? "offline" : "maintenance";
+    const state = hasMaintenance ? "maintenance" : level === "up" ? "operational" : level === "down" ? "offline" : "maintenance";
     const label =
-      level === "mixed"
-        ? "Intermittent (up/down in this period)"
-        : `${Math.round(uptimeRatio * 100)}% up / ${Math.round(downRatio * 100)}% down`;
+      hasMaintenance
+        ? "Maintenance"
+        : level === "mixed"
+          ? "Intermittent (up/down in this period)"
+          : `${Math.round(uptimeRatio * 100)}% up / ${Math.round(downRatio * 100)}% down`;
 
     return {
       state,

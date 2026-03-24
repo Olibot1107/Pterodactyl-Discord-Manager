@@ -7,7 +7,7 @@ const axios = require("axios");
 const api = require("../src/structures/Ptero");
 
 const STATUS_PORT = Number(process.env.STATUS_PORT) || 3000;
-const SAMPLE_INTERVAL_MS = 4_000;
+const SAMPLE_INTERVAL_MS = 60_000;
 const PROBE_TIMEOUT_MS = 5_000;
 const IN_MEMORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -479,35 +479,90 @@ function downsampleHistory(history, maxPoints = 260) {
   return reduced;
 }
 
-function computeUptimeBars(samples, windowMs) {
-  const now = Date.now();
-  const windowStart = now - windowMs;
+function computeUptimeBars(samples, windowMs, options = {}) {
+  const endTs = Number.isFinite(Number(options.endTs)) ? Number(options.endTs) : Date.now();
+  const startTs = Number.isFinite(Number(options.startTs))
+    ? Number(options.startTs)
+    : endTs - Number(windowMs || 0);
 
-  const uptimeSamples = (samples || []).filter((s) => !s.maintenance);
-  const uptimeBuckets = Math.max(48, Math.min(180, Math.round(windowMs / (4 * 60 * 60 * 1000))));
-  const bucketSizeMs = windowMs / uptimeBuckets;
-  const buckets = Array.from({ length: uptimeBuckets }, () => ({ total: 0, up: 0, down: 0 }));
+  if (!Number.isFinite(startTs) || !Number.isFinite(endTs) || endTs <= startTs) return [];
 
-  for (const sample of uptimeSamples) {
-    if (!sample.ts || sample.ts < windowStart) continue;
-    const idx = Math.max(0, Math.min(uptimeBuckets - 1, Math.floor((sample.ts - windowStart) / bucketSizeMs)));
+  const BUCKET_15M_MS = 15 * 60 * 1000;
+  const bucketSizeMs = Number.isFinite(Number(options.bucketSizeMs)) ? Number(options.bucketSizeMs) : BUCKET_15M_MS;
+  const bucketCount = Math.max(1, Math.ceil((endTs - startTs) / bucketSizeMs));
+
+  const buckets = Array.from({ length: bucketCount }, () => ({ total: 0, up: 0, down: 0, maintenance: 0 }));
+
+  for (const sample of samples || []) {
+    if (!sample || !Number.isFinite(Number(sample.ts))) continue;
+    const ts = Number(sample.ts);
+    if (ts < startTs || ts >= endTs) continue;
+
+    const idx = Math.max(0, Math.min(bucketCount - 1, Math.floor((ts - startTs) / bucketSizeMs)));
     const b = buckets[idx];
-    b.total++;
-    if (sample.online) b.up++;
-    else b.down++;
+    if (sample.maintenance) {
+      b.maintenance += 1;
+      continue;
+    }
+    b.total += 1;
+    if (sample.online) b.up += 1;
+    else b.down += 1;
   }
 
-  return buckets.map((b) => {
-    if (b.total === 0) return { level: "none", uptime: null, downRatio: 0, label: "No data" };
-    const uptime = b.up / b.total;
+  return buckets.map((b, idx) => {
+    const fromTs = startTs + idx * bucketSizeMs;
+    const toTs = Math.min(endTs, fromTs + bucketSizeMs);
+    const fromAt = new Date(fromTs).toISOString();
+    const toAt = new Date(toTs).toISOString();
+
+    if (b.total === 0) {
+      const state = b.maintenance > 0 ? "maintenance" : "unknown";
+      return {
+        state,
+        fromAt,
+        toAt,
+        uptimePercent: null,
+        checks: 0,
+        up: 0,
+        down: 0,
+        maintenance: b.maintenance,
+        // legacy fields (kept for backwards compatibility)
+        level: "none",
+        uptime: null,
+        downRatio: 0,
+        label: b.maintenance > 0 ? "Maintenance" : "No data",
+      };
+    }
+
+    const uptimeRatio = b.up / b.total;
     const downRatio = b.down / b.total;
+    const uptimePercent = Number(((uptimeRatio || 0) * 100).toFixed(2));
+
     let level = "mixed";
     if (downRatio === 0) level = "up";
     else if (downRatio === 1) level = "down";
-    const label = level === "mixed"
-      ? "Intermittent (up/down in this period)"
-      : `${Math.round(uptime * 100)}% up / ${Math.round(downRatio * 100)}% down`;
-    return { level, uptime, downRatio, label };
+
+    const state = level === "up" ? "operational" : level === "down" ? "offline" : "maintenance";
+    const label =
+      level === "mixed"
+        ? "Intermittent (up/down in this period)"
+        : `${Math.round(uptimeRatio * 100)}% up / ${Math.round(downRatio * 100)}% down`;
+
+    return {
+      state,
+      fromAt,
+      toAt,
+      uptimePercent,
+      checks: b.total,
+      up: b.up,
+      down: b.down,
+      maintenance: b.maintenance,
+      // legacy fields (kept for backwards compatibility)
+      level,
+      uptime: uptimeRatio,
+      downRatio,
+      label,
+    };
   });
 }
 
@@ -773,17 +828,15 @@ function buildNodeInfo(entry) {
   };
 }
 
-async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw) {
+async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw, includeUptimeBars) {
   const { raw, graph, source } = await loadNodeHistoryWindow(nodeId, entry.history || [], rangeWindowMs);
   const stats = computeNodeWindowStats(raw, rangeWindowMs);
-  const uptimeBars = computeUptimeBars(raw, rangeWindowMs);
   const payload = {
     node: buildNodeInfo(entry),
     nodeId,
     rangeWindowMs,
     rangeLabel: getRangeLabel(rangeWindowMs),
     stats,
-    uptimeBars,
     historyMeta: {
       rawSamples: raw.length,
       returnedSamples: includeHistoryRaw ? raw.length : includeHistory ? graph.length : 0,
@@ -792,6 +845,10 @@ async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHist
       source,
     },
   };
+
+  if (includeUptimeBars) {
+    payload.uptimeBars = computeUptimeBars(raw, rangeWindowMs);
+  }
 
   if (includeHistory) {
     payload.history = graph;
@@ -809,7 +866,8 @@ async function buildNodeDayUptimePayload(entry, nodeId, dayOffset) {
   const daySamples = raw.filter((sample) => Number(sample.ts) >= start && Number(sample.ts) < end);
   const windowMs = end - start;
   const stats = computeNodeWindowStats(daySamples, windowMs, end);
-  const throughput = computeUptimeBars(daySamples, windowMs);
+  const barEnd = offset === 0 ? Math.min(end, Date.now()) : end;
+  const throughput = computeUptimeBars(daySamples, windowMs, { startTs: start, endTs: barEnd });
 
   return {
     node: buildNodeInfo(entry),
@@ -948,7 +1006,14 @@ const statusServer = http.createServer(async (req, res) => {
       }
 
       if (tail === "ping-history") {
-        const payload = await buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw);
+        const payload = await buildNodeHistoryPayload(
+          entry,
+          nodeId,
+          rangeWindowMs,
+          includeHistory,
+          includeHistoryRaw,
+          includeUptimeBars
+        );
         sendJson(res, 200, {
           monitor: buildMonitorMeta(rangeWindowMs),
           ...payload,

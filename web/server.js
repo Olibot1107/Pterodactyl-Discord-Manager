@@ -13,8 +13,6 @@ const IN_MEMORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_VIEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DB_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
-const MAX_DAY_OFFSET = 6;
 
 const RANGE_MAP = {
   "24h": 24 * 60 * 60 * 1000,
@@ -29,25 +27,6 @@ function resolveRangeWindow(rawRange) {
 function getRangeLabel(windowMs) {
   if (windowMs >= RANGE_MAP["7d"]) return "7d";
   return "24h";
-}
-
-function clampDayOffset(rawValue) {
-  const parsed = Number(rawValue);
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, Math.min(MAX_DAY_OFFSET, Math.trunc(parsed)));
-}
-
-function getDayWindow(dayOffset = 0, nowTs = Date.now()) {
-  const offset = clampDayOffset(dayOffset);
-  const now = new Date(nowTs);
-  const utcStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const start = utcStart - offset * DAY_MS;
-  return { start, end: start + DAY_MS, offset };
-}
-
-function getDayLabel(startTs) {
-  const date = new Date(startTs);
-  return date.toISOString().slice(0, 10);
 }
 
 const HISTORY_DB_DIR = path.join(__dirname, "data");
@@ -479,96 +458,6 @@ function downsampleHistory(history, maxPoints = 260) {
   return reduced;
 }
 
-function computeUptimeBars(samples, windowMs, options = {}) {
-  const endTs = Number.isFinite(Number(options.endTs)) ? Number(options.endTs) : Date.now();
-  const startTs = Number.isFinite(Number(options.startTs))
-    ? Number(options.startTs)
-    : endTs - Number(windowMs || 0);
-
-  if (!Number.isFinite(startTs) || !Number.isFinite(endTs) || endTs <= startTs) return [];
-
-  const BUCKET_1H_MS = 60 * 60 * 1000;
-  const bucketSizeMs = Number.isFinite(Number(options.bucketSizeMs)) ? Number(options.bucketSizeMs) : BUCKET_1H_MS;
-  const bucketCount = Math.max(1, Math.ceil((endTs - startTs) / bucketSizeMs));
-
-  const buckets = Array.from({ length: bucketCount }, () => ({ total: 0, up: 0, down: 0, maintenance: 0 }));
-
-  for (const sample of samples || []) {
-    if (!sample || !Number.isFinite(Number(sample.ts))) continue;
-    const ts = Number(sample.ts);
-    if (ts < startTs || ts >= endTs) continue;
-
-    const idx = Math.max(0, Math.min(bucketCount - 1, Math.floor((ts - startTs) / bucketSizeMs)));
-    const b = buckets[idx];
-    if (sample.maintenance) {
-      b.maintenance += 1;
-      continue;
-    }
-    b.total += 1;
-    if (sample.online) b.up += 1;
-    else b.down += 1;
-  }
-
-  return buckets.map((b, idx) => {
-    const fromTs = startTs + idx * bucketSizeMs;
-    const toTs = Math.min(endTs, fromTs + bucketSizeMs);
-    const fromAt = new Date(fromTs).toISOString();
-    const toAt = new Date(toTs).toISOString();
-
-    const hasMaintenance = b.maintenance > 0;
-    if (b.total === 0) {
-      const state = hasMaintenance ? "maintenance" : "unknown";
-      return {
-        state,
-        fromAt,
-        toAt,
-        uptimePercent: null,
-        checks: 0,
-        up: 0,
-        down: 0,
-        maintenance: b.maintenance,
-        // legacy fields (kept for backwards compatibility)
-        level: "none",
-        uptime: null,
-        downRatio: 0,
-        label: hasMaintenance ? "Maintenance" : "No data",
-      };
-    }
-
-    const uptimeRatio = b.up / b.total;
-    const downRatio = b.down / b.total;
-    const uptimePercent = hasMaintenance ? null : Number(((uptimeRatio || 0) * 100).toFixed(2));
-
-    let level = "mixed";
-    if (downRatio === 0) level = "up";
-    else if (downRatio === 1) level = "down";
-
-    const state = hasMaintenance ? "maintenance" : level === "up" ? "operational" : level === "down" ? "offline" : "maintenance";
-    const label =
-      hasMaintenance
-        ? "Maintenance"
-        : level === "mixed"
-          ? "Intermittent (up/down in this period)"
-          : `${Math.round(uptimeRatio * 100)}% up / ${Math.round(downRatio * 100)}% down`;
-
-    return {
-      state,
-      fromAt,
-      toAt,
-      uptimePercent,
-      checks: b.total,
-      up: b.up,
-      down: b.down,
-      maintenance: b.maintenance,
-      // legacy fields (kept for backwards compatibility)
-      level,
-      uptime: uptimeRatio,
-      downRatio,
-      label,
-    };
-  });
-}
-
 function getSampleState(sample) {
   if (!sample) return "unknown";
   if (sample.maintenance) return "maintenance";
@@ -732,16 +621,12 @@ function parseIncludes(searchParams) {
   const rawHistory = String(searchParams.get("historyRaw") || "").toLowerCase();
   if (rawHistory === "1" || rawHistory === "true") set.add("historyraw");
 
-  const bars = String(searchParams.get("uptimeBars") || "").toLowerCase();
-  if (bars === "1" || bars === "true") set.add("uptimebars");
-
   return set;
 }
 
 async function buildNodePayload(windowMs = DEFAULT_VIEW_WINDOW_MS, options = {}) {
   const includeHistory = !!options.includeHistory;
   const includeHistoryRaw = !!options.includeHistoryRaw;
-  const includeUptimeBars = !!options.includeUptimeBars;
   const nodeIdSet = Array.isArray(options.nodeIds) ? new Set(options.nodeIds.map((v) => Number(v))) : null;
 
   const baseNodes = [...nodeMonitor.nodes.values()].filter((n) => {
@@ -799,10 +684,6 @@ async function buildNodePayload(windowMs = DEFAULT_VIEW_WINDOW_MS, options = {})
       },
     };
 
-    if (includeUptimeBars) {
-      payload.uptimeBars = computeUptimeBars(raw, windowMs);
-    }
-
     if (includeHistoryRaw) {
       payload.historyRaw = raw;
     } else if (includeHistory) {
@@ -831,7 +712,7 @@ function buildNodeInfo(entry) {
   };
 }
 
-async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw, includeUptimeBars) {
+async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHistory, includeHistoryRaw) {
   const { raw, graph, source } = await loadNodeHistoryWindow(nodeId, entry.history || [], rangeWindowMs);
   const stats = computeNodeWindowStats(raw, rangeWindowMs);
   const payload = {
@@ -849,10 +730,6 @@ async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHist
     },
   };
 
-  if (includeUptimeBars) {
-    payload.uptimeBars = computeUptimeBars(raw, rangeWindowMs);
-  }
-
   if (includeHistory) {
     payload.history = graph;
   }
@@ -861,27 +738,6 @@ async function buildNodeHistoryPayload(entry, nodeId, rangeWindowMs, includeHist
   }
 
   return payload;
-}
-
-async function buildNodeDayUptimePayload(entry, nodeId, dayOffset) {
-  const { raw } = await loadNodeHistoryWindow(nodeId, entry.history || [], MAX_HISTORY_WINDOW_MS);
-  const { start, end, offset } = getDayWindow(dayOffset);
-  const daySamples = raw.filter((sample) => Number(sample.ts) >= start && Number(sample.ts) < end);
-  const windowMs = end - start;
-  const stats = computeNodeWindowStats(daySamples, windowMs, end);
-  const barEnd = offset === 0 ? Math.min(end, Date.now()) : end;
-  const throughput = computeUptimeBars(daySamples, windowMs, { startTs: start, endTs: barEnd });
-
-  return {
-    node: buildNodeInfo(entry),
-    nodeId,
-    dayOffset: offset,
-    dayLabel: getDayLabel(start),
-    windowMs,
-    stats,
-    uptimeBars: throughput,
-    sampleCount: daySamples.length,
-  };
 }
 
 function setCorsHeaders(res) {
@@ -974,7 +830,6 @@ const statusServer = http.createServer(async (req, res) => {
 
     const includeHistory = includes.has("history");
     const includeHistoryRaw = includes.has("historyraw");
-    const includeUptimeBars = includes.has("uptimebars");
 
     if (requestUrl.pathname === "/api/health") {
       sendJson(res, 200, {
@@ -985,7 +840,7 @@ const statusServer = http.createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === "/api/nodes") {
-      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory, includeHistoryRaw, includeUptimeBars });
+      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory, includeHistoryRaw });
       sendJson(res, 200, {
         monitor: buildMonitorMeta(rangeWindowMs),
         summary: computeFleetSummary(nodes),
@@ -1014,21 +869,10 @@ const statusServer = http.createServer(async (req, res) => {
           nodeId,
           rangeWindowMs,
           includeHistory,
-          includeHistoryRaw,
-          includeUptimeBars
+          includeHistoryRaw
         );
         sendJson(res, 200, {
           monitor: buildMonitorMeta(rangeWindowMs),
-          ...payload,
-        });
-        return;
-      }
-
-      if (tail === "uptime-bar") {
-        const dayOffset = clampDayOffset(requestUrl.searchParams.get("day"));
-        const payload = await buildNodeDayUptimePayload(entry, nodeId, dayOffset);
-        sendJson(res, 200, {
-          monitor: buildMonitorMeta(DAY_MS),
           ...payload,
         });
         return;
@@ -1038,7 +882,6 @@ const statusServer = http.createServer(async (req, res) => {
         const nodes = await buildNodePayload(rangeWindowMs, {
           includeHistory: true,
           includeHistoryRaw,
-          includeUptimeBars,
           nodeIds: [nodeId],
         });
         if (!nodes.length) {
@@ -1057,7 +900,7 @@ const statusServer = http.createServer(async (req, res) => {
     }
 
     if (requestUrl.pathname === "/api/status") {
-      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory, includeHistoryRaw, includeUptimeBars });
+      const nodes = await buildNodePayload(rangeWindowMs, { includeHistory, includeHistoryRaw });
       sendJson(res, 200, {
         ...stats,
         monitor: buildMonitorMeta(rangeWindowMs),

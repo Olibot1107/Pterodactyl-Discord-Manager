@@ -70,10 +70,9 @@ A Discord bot for managing user registration, server creation, and administratio
 
 ## Status API
 
-- `/api/nodes` – Returns the current node fleet summary plus optional history rows when you add query flags (`?history=1` / `?historyRaw=1` / `?uptimeBars=1`).
-- `/api/nodes/:id` – Returns a single node payload and supports the same include flags for history or uptime bar data.
-- `/api/nodes/:id/ping-history?range=24h|7d[&history=1][&historyRaw=1][&uptimeBars=1]` – Fetches latency/ping history for the requested range with optional downsampled history, raw samples, and per-bucket uptime bars.
-- `/api/nodes/:id/uptime-bar?day=0..6` – Returns the uptime bar (24 h split) for a specific day offset (0 = today, 1 = yesterday … 6 = six days ago) along with per-day stats.
+- `/api/nodes` – Returns the current node fleet summary plus optional history rows when you add query flags (`?history=1` / `?historyRaw=1`).
+- `/api/nodes/:id` – Returns a single node payload and supports the same include flags for history data.
+- `/api/nodes/:id/ping-history?range=24h|7d[&history=1][&historyRaw=1]` – Fetches latency/ping history for the requested range with optional downsampled history and raw samples.
 - `/api/health`, `/api/status` – Compatibility endpoints that reflect the same fleet summary + monitor metadata.
 
 ## Notes

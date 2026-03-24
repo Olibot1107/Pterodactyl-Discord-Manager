@@ -26,18 +26,15 @@ Responses include permissive CORS headers:
 - `GET /api/health`
   - Service + monitor metadata (no nodes)
 
-- `GET /api/nodes?range=24h|7d&include=history,historyRaw,uptimeBars`
+- `GET /api/nodes?range=24h|7d&include=history,historyRaw`
   - List nodes with status/metrics
   - `include=history` returns downsampled `history`
   - `include=historyRaw` returns full `historyRaw` (bigger payload)
-  - `include=uptimeBars` returns `uptimeBars` buckets
 
 - `GET /api/nodes/:id?range=24h|7d`
   - Single node (always includes downsampled `history`; add `include=historyRaw` if needed)
-- `GET /api/nodes/:id/ping-history?range=24h|7d&history=1|0&historyRaw=1|0&uptimeBars=1|0`
-  - Returns the derived ping history payload for the requested window; include `history` or `historyRaw` flags to get the downsampled or raw samples, and `uptimeBars=1` to pull the per-bucket uptime bar data for that range.
-- `GET /api/nodes/:id/uptime-bar?day=0..6`
-  - Returns the 24 h uptime bar + summary stats for the specified day offset (0 = today, up to 6 = six days ago); helpful for wiring a single-day bar chart.
+- `GET /api/nodes/:id/ping-history?range=24h|7d&history=1|0&historyRaw=1|0`
+  - Returns the derived ping history payload for the requested window; include `history` or `historyRaw` flags to get the downsampled or raw samples.
 
 - `GET /api/status?range=24h|7d&include=...`
   - Same as `/api/nodes` but also includes service stats + `summary`
@@ -46,7 +43,7 @@ Responses include permissive CORS headers:
 
 ```bash
 curl -s http://localhost:3000/api/health | jq
-curl -s "http://localhost:3000/api/status?range=24h&include=history,uptimeBars" | jq
+curl -s "http://localhost:3000/api/status?range=24h&include=history" | jq
 curl -s "http://localhost:3000/api/nodes/1?range=7d" | jq
 ```
 
@@ -58,4 +55,4 @@ Each node looks like:
 - `probe`: what URL/host is being checked
 - `status`: `state` (`operational|maintenance|offline|unknown`), `sinceAt`, `checkedAt`, `latencyMs`, `statusCode`, `error`, last online/offline times
 - `metrics`: uptime %, downtime, incidents, window info
-- `history` / `historyRaw` / `uptimeBars` (optional via `include=...`)
+- `history` / `historyRaw` (optional via `include=...`)

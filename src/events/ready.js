@@ -17,6 +17,7 @@ const ServerState = require("../models/ServerState");
 const BoosterGrant = require("../models/BoosterGrant");
 const { revokeBoosterPerks } = require("../structures/boosterPerks");
 const { updateServerBuild } = require("../structures/pteroBuild");
+const { processExpiredAccountDeletions } = require("../services/accountDeletion");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
 const SERVER_ROLE_ID = discord.ServerRoleId;
@@ -27,6 +28,7 @@ const WHITELISTED_UUIDS = []; // Add your whitelisted server UUIDs here
 const ROLE_SYNC_INTERVAL_MS = 10 * 1000; // 15 minutes
 const STATUS_BOARD_INTERVAL_MS = 10 * 1000;
 const BOOSTER_GRANT_INTERVAL_MS = 60 * 1000;
+const ACCOUNT_DELETION_INTERVAL_MS = 60 * 60 * 1000;
 const STATUS_REQUEST_CONCURRENCY = 5;
 const SERVER_LINES_PER_PAGE = 15;
 const SERVER_STATUS_CHANNEL_ID = "1486452679306641528";
@@ -1037,5 +1039,12 @@ module.exports = async (client) => {
   // Expire temporary booster grants
   expireTemporaryBoosters(client);
   setInterval(() => expireTemporaryBoosters(client), BOOSTER_GRANT_INTERVAL_MS);
+
+  // Delete panel accounts for members who left and didn't rejoin within 7 days
+  processExpiredAccountDeletions(client, GUILD_ID);
+  setInterval(
+    () => processExpiredAccountDeletions(client, GUILD_ID),
+    ACCOUNT_DELETION_INTERVAL_MS
+  );
 
 };

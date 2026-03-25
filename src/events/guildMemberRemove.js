@@ -1,48 +1,24 @@
-const User = require("../models/User");
-const api = require("../structures/Ptero");
-const userRegistry = require("../services/userRegistry");
+const { scheduleAccountDeletion, SEVEN_DAYS_MS } = require("../services/accountDeletion");
 
 module.exports = async (client, member) => {
-  console.log(`[GuildMemberRemove] ${member.user.tag} left the server. Checking for linked panel account...`);
-
   try {
-    // Find the user in the database and verify the stored panel ID still exists
-    const user = await userRegistry.getVerifiedUser(member.id);
-    if (!user) {
-      console.log(`[GuildMemberRemove] No panel account found for ${member.user.tag}.`);
+    console.log(
+      `[GuildMemberRemove] ${member.user.tag} left. Scheduling panel deletion in ${Math.round(
+        SEVEN_DAYS_MS / (24 * 60 * 60 * 1000)
+      )} days...`
+    );
+
+    const pending = await scheduleAccountDeletion(member.id);
+    if (!pending) {
+      console.log(`[GuildMemberRemove] No linked panel account found for ${member.user.tag}.`);
       return;
     }
 
-    console.log(`[GuildMemberRemove] Found panel account for ${member.user.tag} (Ptero ID: ${user.pteroId}). Deleting...`);
-
-    // Fetch all servers owned by the user
-    const allServers = await api.get("/servers?per_page=1000");
-    const userServers = allServers.data.data.filter(
-      s => s.attributes.user === user.pteroId
+    console.log(
+      `[GuildMemberRemove] Scheduled deletion for ${member.user.tag} at ${new Date(
+        pending.deleteAfter
+      ).toISOString()} (Ptero ID: ${pending.pteroId})`
     );
-
-    // Delete all user servers
-    for (const srv of userServers) {
-      const serverId = srv.attributes.id;
-      console.log(`[GuildMemberRemove] Deleting server: ${srv.attributes.name} (ID: ${serverId})`);
-      try {
-        await api.delete(`/servers/${serverId}`);
-        console.log(`[GuildMemberRemove] Successfully deleted server: ${srv.attributes.name}`);
-      } catch (serverErr) {
-        console.error(`[GuildMemberRemove] Failed to delete server ${srv.attributes.name}:`, serverErr.message);
-      }
-    }
-
-    // Delete user from panel
-    console.log(`[GuildMemberRemove] Deleting panel user: ${user.email}`);
-    await api.delete(`/users/${user.pteroId}`);
-
-    // Delete user from local database
-    await User.deleteOne({ discordId: member.id });
-    userRegistry.clearCachedUser(member.id);
-
-    console.log(`[GuildMemberRemove] Successfully deleted panel account and all servers for ${member.user.tag}`);
-
   } catch (err) {
     console.error(`[GuildMemberRemove] Error processing ${member.user.tag}:`, err.message, err.response?.data || err);
   }

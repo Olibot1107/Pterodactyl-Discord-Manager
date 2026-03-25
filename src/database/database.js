@@ -27,6 +27,17 @@ db.serialize(() => {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS pendingAccountDeletions (
+      discordId TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      pteroId INTEGER NOT NULL,
+      deleteAfter INTEGER NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS stickyMessages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       guildId TEXT NOT NULL,
@@ -820,6 +831,91 @@ const BoosterGrant = {
   },
 };
 
+// Pending account deletion model functions
+const PendingAccountDeletion = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map((key) => `${key} = ?`).join(" AND ");
+      db.get(
+        `SELECT * FROM pendingAccountDeletions WHERE ${whereClause}`,
+        values,
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        }
+      );
+    });
+  },
+
+  findExpired: (timestamp, limit = 50) => {
+    return new Promise((resolve, reject) => {
+      db.all(
+        `SELECT * FROM pendingAccountDeletions WHERE deleteAfter <= ? ORDER BY deleteAfter ASC LIMIT ?`,
+        [timestamp, limit],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
+  },
+
+  upsert: (data) => {
+    return new Promise((resolve, reject) => {
+      const now = data.updatedAt || Date.now();
+      db.run(
+        `
+          INSERT INTO pendingAccountDeletions (
+            discordId,
+            email,
+            pteroId,
+            deleteAfter,
+            createdAt,
+            updatedAt
+          )
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(discordId)
+          DO UPDATE SET
+            email = excluded.email,
+            pteroId = excluded.pteroId,
+            deleteAfter = excluded.deleteAfter,
+            updatedAt = excluded.updatedAt
+        `,
+        [
+          data.discordId,
+          data.email,
+          data.pteroId,
+          data.deleteAfter,
+          data.createdAt || now,
+          now,
+        ],
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map((key) => `${key} = ?`).join(" AND ");
+      db.run(
+        `DELETE FROM pendingAccountDeletions WHERE ${whereClause}`,
+        values,
+        function(err) {
+          if (err) reject(err);
+          else resolve({ affectedRows: this.changes });
+        }
+      );
+    });
+  },
+};
+
 module.exports = {
   db,
   User,
@@ -830,4 +926,5 @@ module.exports = {
   ServerState,
   BoosterPremium,
   BoosterGrant,
+  PendingAccountDeletion,
 };

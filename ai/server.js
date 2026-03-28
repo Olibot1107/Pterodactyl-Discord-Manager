@@ -634,3 +634,14 @@ function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+process.on("unhandledRejection", (reason) => {
+  log("error", "unhandled_rejection", { reason: String(reason?.stack || reason) });
+});
+
+process.on("uncaughtException", (err) => {
+  log("error", "uncaught_exception", {
+    error: String(err?.message || err),
+    stack: String(err?.stack || ""),
+  });
+});

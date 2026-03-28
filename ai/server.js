@@ -1,8 +1,36 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const axios = require("axios");
 const { db } = require("../src/database/database");
+
+const LOG_LEVEL = String(process.env.AI_LOG_LEVEL || "info").toLowerCase();
+const LOG_PROMPTS = String(process.env.AI_LOG_PROMPTS || "").toLowerCase() === "true";
+const LOG_DISCORD_IDS = String(process.env.AI_LOG_DISCORD_IDS || "").toLowerCase() === "true";
+
+const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+
+function shouldLog(level) {
+  const want = LOG_LEVELS[LOG_LEVEL] ?? LOG_LEVELS.info;
+  const have = LOG_LEVELS[level] ?? LOG_LEVELS.info;
+  return have <= want;
+}
+
+function log(level, message, meta = {}) {
+  if (!shouldLog(level)) return;
+  const entry = { ts: new Date().toISOString(), level, message, ...meta };
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify(entry));
+}
+
+function safeKeyId(rawKey) {
+  try {
+    return crypto.createHash("sha256").update(String(rawKey)).digest("hex").slice(0, 10);
+  } catch {
+    return "unknown";
+  }
+}
 
 const PORT = Number(process.env.AI_PORT || process.env.PORT || 3006);
 const HOST = process.env.AI_HOST || process.env.HOST || "0.0.0.0";
@@ -15,7 +43,83 @@ app.set("etag", false);
 const publicDir = path.join(__dirname, "public");
 app.use("/public", express.static(publicDir, { fallthrough: true }));
 
+app.use((req, res, next) => {
+  const reqId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex");
+  req.reqId = reqId;
+  res.setHeader("X-Request-Id", reqId);
+
+  const startedAt = Date.now();
+  const ip = req.headers["cf-connecting-ip"] || req.ip;
+  const ua = req.headers["user-agent"];
+
+  log("debug", "http_start", {
+    reqId,
+    method: req.method,
+    path: req.originalUrl,
+    ip,
+    ua,
+    contentType: req.headers["content-type"],
+    contentLength: req.headers["content-length"],
+  });
+
+  res.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    const meta = {
+      reqId,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs,
+      ip,
+    };
+
+    if (req.aiAuth?.apiKey) {
+      meta.aiKeyId = safeKeyId(req.aiAuth.apiKey);
+      if (LOG_DISCORD_IDS) meta.discordId = req.aiAuth.discordId;
+    }
+
+    if (req.aiUpstreamPath) meta.upstreamPath = req.aiUpstreamPath;
+    if (req.aiUpstreamAttempts != null) meta.upstreamAttempts = req.aiUpstreamAttempts;
+    if (req.aiUpstreamStatus != null) meta.upstreamStatus = req.aiUpstreamStatus;
+    if (req.aiRateLimited) meta.rateLimited = true;
+
+    log(
+      res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info",
+      "http_end",
+      meta
+    );
+  });
+
+  return next();
+});
+
 app.use(express.json({ limit: "1mb" }));
+
+app.use((err, req, res, next) => {
+  const isJsonParseError =
+    err &&
+    (err.type === "entity.parse.failed" ||
+      (err instanceof SyntaxError && typeof err.message === "string" && err.message.toLowerCase().includes("json")));
+
+  if (!isJsonParseError) return next(err);
+
+  log("warn", "invalid_json", {
+    reqId: req.reqId,
+    method: req.method,
+    path: req.originalUrl,
+    ip: req.headers["cf-connecting-ip"] || req.ip,
+    contentType: req.headers["content-type"],
+    contentLength: req.headers["content-length"],
+    error: String(err.message || err),
+  });
+
+  return res.status(400).json({
+    error: {
+      message: "Invalid JSON body. Send valid JSON with Content-Type: application/json.",
+      type: "invalid_request_error",
+    },
+  });
+});
 
 function loadSettings() {
   try {
@@ -78,9 +182,15 @@ function nextProviderKey() {
   return key;
 }
 
-console.log(
-  `[AI] Upstream configured: baseUrl=${PROVIDER_BASE_URL} keys=${providerKeys.length}`
-);
+log("info", "upstream_configured", {
+  upstreamKeys: providerKeys.length,
+});
+
+if (shouldLog("debug")) {
+  log("debug", "upstream_details", {
+    upstreamBaseUrl: PROVIDER_BASE_URL,
+  });
+}
 
 function dbGet(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -109,6 +219,7 @@ function extractBearerToken(req) {
 async function requireUserApiKey(req, res, next) {
   const token = extractBearerToken(req);
   if (!token) {
+    log("warn", "auth_missing", { reqId: req.reqId, path: req.originalUrl });
     return res.status(401).json({
       error: { message: "Missing API key. Send: Authorization: Bearer <key>", type: "auth_error" },
     });
@@ -117,14 +228,17 @@ async function requireUserApiKey(req, res, next) {
   try {
     const record = await dbGet("SELECT discordId, apiKey FROM aiApiKeys WHERE apiKey = ?", [token]);
     if (!record) {
+      log("warn", "auth_invalid", { reqId: req.reqId, path: req.originalUrl, aiKeyId: safeKeyId(token) });
       return res.status(401).json({
         error: { message: "Invalid API key.", type: "auth_error" },
       });
     }
     req.aiAuth = { discordId: record.discordId, apiKey: record.apiKey };
+    log("debug", "auth_ok", { reqId: req.reqId, path: req.originalUrl, aiKeyId: safeKeyId(record.apiKey) });
     return next();
   } catch (err) {
     const message = err && err.message ? err.message : "Database error";
+    log("error", "auth_db_error", { reqId: req.reqId, path: req.originalUrl, error: String(message) });
     return res.status(500).json({ error: { message, type: "server_error" } });
   }
 }
@@ -179,6 +293,14 @@ async function enforceRateLimit(req, res, next) {
       const retryAfterMs = Math.max(0, RATE_LIMIT_WINDOW_MS - (now - windowStart));
       const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
       res.setHeader("Retry-After", String(retryAfterSeconds));
+      req.aiRateLimited = true;
+      log("warn", "rate_limited", {
+        reqId: req.reqId,
+        aiKeyId: safeKeyId(apiKey),
+        count,
+        windowStart,
+        retryAfterSeconds,
+      });
       return res.status(429).json({
         error: {
           message: "Rate limit exceeded.",
@@ -208,9 +330,18 @@ async function enforceRateLimit(req, res, next) {
     res.setHeader("X-RateLimit-Remaining", String(Math.max(0, RATE_LIMIT_MAX - nextCount)));
     res.setHeader("X-RateLimit-Window", String(RATE_LIMIT_WINDOW_MS));
 
+    log("debug", "rate_ok", {
+      reqId: req.reqId,
+      aiKeyId: safeKeyId(apiKey),
+      count: nextCount,
+      remaining: Math.max(0, RATE_LIMIT_MAX - nextCount),
+      windowStart,
+    });
+
     return next();
   } catch (err) {
     const message = err && err.message ? err.message : "Database error";
+    log("error", "rate_db_error", { reqId: req.reqId, aiKeyId: safeKeyId(apiKey), error: String(message) });
     return res.status(500).json({ error: { message, type: "server_error" } });
   }
 }
@@ -238,6 +369,7 @@ function respondUpstreamMisconfigured(res) {
 }
 
 async function proxyToUpstream(req, res, upstreamPath) {
+  req.aiUpstreamPath = upstreamPath;
   if (!providerKeys.length) {
     return res.status(500).json({
       error: {
@@ -248,12 +380,29 @@ async function proxyToUpstream(req, res, upstreamPath) {
     });
   }
 
+  if (req.body && typeof req.body === "object") {
+    const bodyMeta = {
+      reqId: req.reqId,
+      upstreamPath,
+      model: req.body.model,
+      stream: !!req.body.stream,
+      messages: Array.isArray(req.body.messages) ? req.body.messages.length : undefined,
+    };
+    if (LOG_PROMPTS && Array.isArray(req.body.messages)) {
+      bodyMeta.promptPreview = req.body.messages
+        .map((m) => `${m?.role || "?"}:${String(m?.content || "").slice(0, 80)}`)
+        .slice(0, 6);
+    }
+    log("debug", "upstream_request", bodyMeta);
+  }
+
   const url = `${PROVIDER_BASE_URL}${upstreamPath}`;
   try {
     const wantsStream = !!(req.body && req.body.stream);
     for (let attempt = 0; attempt < providerKeys.length; attempt += 1) {
       const apiKey = nextProviderKey();
       if (!apiKey) break;
+      req.aiUpstreamAttempts = attempt + 1;
 
       const headers = {
         authorization: `Bearer ${apiKey}`,
@@ -272,10 +421,13 @@ async function proxyToUpstream(req, res, upstreamPath) {
         });
 
         if (isUpstreamInvalidKeyResponse(upstream)) {
+          log("warn", "upstream_invalid_key", { reqId: req.reqId, attempt: attempt + 1 });
           upstream.data?.resume?.();
           continue;
         }
 
+        req.aiUpstreamStatus = upstream.status;
+        log("debug", "upstream_stream_start", { reqId: req.reqId, status: upstream.status, attempt: attempt + 1 });
         res.status(upstream.status);
         res.setHeader(
           "content-type",
@@ -298,20 +450,28 @@ async function proxyToUpstream(req, res, upstreamPath) {
         validateStatus: () => true,
       });
 
-      if (isUpstreamInvalidKeyResponse(upstream)) continue;
+      if (isUpstreamInvalidKeyResponse(upstream)) {
+        log("warn", "upstream_invalid_key", { reqId: req.reqId, attempt: attempt + 1 });
+        continue;
+      }
 
+      req.aiUpstreamStatus = upstream.status;
+      log("debug", "upstream_response", { reqId: req.reqId, status: upstream.status, attempt: attempt + 1 });
       if (typeof upstream.data === "object") return res.status(upstream.status).json(upstream.data);
       return res.status(upstream.status).type("text").send(String(upstream.data));
     }
 
+    log("error", "upstream_all_keys_invalid", { reqId: req.reqId, attempts: providerKeys.length });
     return respondUpstreamMisconfigured(res);
   } catch (err) {
     const message = err && err.message ? err.message : "Upstream request failed";
+    log("error", "upstream_error", { reqId: req.reqId, upstreamPath, error: String(message) });
     return res.status(502).json({ error: { message, type: "upstream_error" } });
   }
 }
 
 app.get("/v1/models", async (req, res) => {
+  req.aiUpstreamPath = "/models";
   if (!providerKeys.length) {
     return res.status(500).json({
       error: {
@@ -326,6 +486,7 @@ app.get("/v1/models", async (req, res) => {
     for (let attempt = 0; attempt < providerKeys.length; attempt += 1) {
       const apiKey = nextProviderKey();
       if (!apiKey) break;
+      req.aiUpstreamAttempts = attempt + 1;
 
       const upstream = await axios({
         method: "get",
@@ -335,14 +496,21 @@ app.get("/v1/models", async (req, res) => {
         validateStatus: () => true,
       });
 
-      if (isUpstreamInvalidKeyResponse(upstream)) continue;
+      if (isUpstreamInvalidKeyResponse(upstream)) {
+        log("warn", "upstream_invalid_key", { reqId: req.reqId, attempt: attempt + 1, path: "/models" });
+        continue;
+      }
 
+      req.aiUpstreamStatus = upstream.status;
+      log("debug", "upstream_response", { reqId: req.reqId, status: upstream.status, attempt: attempt + 1, path: "/models" });
       return res.status(upstream.status).json(upstream.data);
     }
 
+    log("error", "upstream_all_keys_invalid", { reqId: req.reqId, attempts: providerKeys.length, path: "/models" });
     return respondUpstreamMisconfigured(res);
   } catch (err) {
     const message = err && err.message ? err.message : "Upstream request failed";
+    log("error", "upstream_error", { reqId: req.reqId, path: "/models", error: String(message) });
     return res.status(502).json({ error: { message, type: "upstream_error" } });
   }
 });
@@ -370,6 +538,7 @@ app.post("/api/chat", async (req, res) => {
         : null;
 
   if (!finalMessages) {
+    log("warn", "chat_invalid_body", { reqId: req.reqId });
     return res.status(400).json({
       error: {
         message: "Provide `messages` (array) or `content` (string).",
@@ -440,12 +609,25 @@ app.use((req, res) => {
   res.status(404).type("text").send("Not found");
 });
 
+app.use((err, req, res, next) => {
+  log("error", "unhandled_error", {
+    reqId: req.reqId,
+    method: req.method,
+    path: req.originalUrl,
+    error: String(err?.message || err),
+    stack: String(err?.stack || ""),
+  });
+
+  if (res.headersSent) return next(err);
+  return res.status(500).json({ error: { message: "Internal server error", type: "server_error" } });
+});
+
 const server = app.listen(PORT, HOST, () => {
-  console.log(`AI website listening on http://localhost:${PORT} (bound to ${HOST}:${PORT})`);
+  log("info", "listening", { url: `http://localhost:${PORT}`, bind: `${HOST}:${PORT}` });
 });
 
 function shutdown(signal) {
-  console.log(`Received ${signal}; shutting down...`);
+  log("info", "shutdown", { signal });
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000).unref();
 }

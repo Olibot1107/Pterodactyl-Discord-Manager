@@ -78,6 +78,10 @@ function nextProviderKey() {
   return key;
 }
 
+console.log(
+  `[AI] Upstream configured: baseUrl=${PROVIDER_BASE_URL} keys=${providerKeys.length}`
+);
+
 function dbGet(sql, params = []) {
   return new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => {
@@ -214,9 +218,27 @@ async function enforceRateLimit(req, res, next) {
 app.use("/v1", enforceRateLimit);
 app.use("/api", enforceRateLimit);
 
-async function proxyToGroq(req, res, upstreamPath) {
-  const apiKey = nextProviderKey();
-  if (!apiKey) {
+function isUpstreamInvalidKeyResponse(upstream) {
+  const upstreamError = upstream?.data?.error;
+  return (
+    upstream?.status === 401 &&
+    upstreamError &&
+    (String(upstreamError.code || "").toLowerCase() === "invalid_api_key" ||
+      String(upstreamError.message || "").toLowerCase().includes("invalid api key"))
+  );
+}
+
+function respondUpstreamMisconfigured(res) {
+  return res.status(502).json({
+    error: {
+      message: "AI backend is temporarily unavailable. Please try again later.",
+      type: "upstream_error",
+    },
+  });
+}
+
+async function proxyToUpstream(req, res, upstreamPath) {
+  if (!providerKeys.length) {
     return res.status(500).json({
       error: {
         message:
@@ -227,45 +249,62 @@ async function proxyToGroq(req, res, upstreamPath) {
   }
 
   const url = `${PROVIDER_BASE_URL}${upstreamPath}`;
-  const headers = {
-    authorization: `Bearer ${apiKey}`,
-    "content-type": "application/json",
-  };
-
   try {
     const wantsStream = !!(req.body && req.body.stream);
-    if (wantsStream) {
+    for (let attempt = 0; attempt < providerKeys.length; attempt += 1) {
+      const apiKey = nextProviderKey();
+      if (!apiKey) break;
+
+      const headers = {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      };
+
+      if (wantsStream) {
+        const upstream = await axios({
+          method: "post",
+          url,
+          headers,
+          data: req.body,
+          responseType: "stream",
+          timeout: 0,
+          validateStatus: () => true,
+        });
+
+        if (isUpstreamInvalidKeyResponse(upstream)) {
+          upstream.data?.resume?.();
+          continue;
+        }
+
+        res.status(upstream.status);
+        res.setHeader(
+          "content-type",
+          upstream.headers["content-type"] || "text/event-stream; charset=utf-8"
+        );
+        if (upstream.headers["cache-control"]) res.setHeader("cache-control", upstream.headers["cache-control"]);
+        if (upstream.headers["x-request-id"]) res.setHeader("x-request-id", upstream.headers["x-request-id"]);
+        if (upstream.headers["date"]) res.setHeader("date", upstream.headers["date"]);
+
+        upstream.data.pipe(res);
+        return;
+      }
+
       const upstream = await axios({
         method: "post",
         url,
         headers,
         data: req.body,
-        responseType: "stream",
-        timeout: 0,
+        timeout: 60_000,
         validateStatus: () => true,
       });
 
-      res.status(upstream.status);
-      res.setHeader("content-type", upstream.headers["content-type"] || "text/event-stream; charset=utf-8");
-      if (upstream.headers["cache-control"]) res.setHeader("cache-control", upstream.headers["cache-control"]);
-      if (upstream.headers["x-request-id"]) res.setHeader("x-request-id", upstream.headers["x-request-id"]);
-      if (upstream.headers["date"]) res.setHeader("date", upstream.headers["date"]);
+      if (isUpstreamInvalidKeyResponse(upstream)) continue;
 
-      upstream.data.pipe(res);
-      return;
+      if (typeof upstream.data === "object") return res.status(upstream.status).json(upstream.data);
+      return res.status(upstream.status).type("text").send(String(upstream.data));
     }
 
-    const upstream = await axios({
-      method: "post",
-      url,
-      headers,
-      data: req.body,
-      timeout: 60_000,
-      validateStatus: () => true,
-    });
-
-    if (typeof upstream.data === "object") return res.status(upstream.status).json(upstream.data);
-    return res.status(upstream.status).type("text").send(String(upstream.data));
+    return respondUpstreamMisconfigured(res);
   } catch (err) {
     const message = err && err.message ? err.message : "Upstream request failed";
     return res.status(502).json({ error: { message, type: "upstream_error" } });
@@ -273,8 +312,7 @@ async function proxyToGroq(req, res, upstreamPath) {
 }
 
 app.get("/v1/models", async (req, res) => {
-  const apiKey = nextProviderKey();
-  if (!apiKey) {
+  if (!providerKeys.length) {
     return res.status(500).json({
       error: {
         message:
@@ -285,21 +323,31 @@ app.get("/v1/models", async (req, res) => {
   }
 
   try {
-    const upstream = await axios({
-      method: "get",
-      url: `${PROVIDER_BASE_URL}/models`,
-      headers: { authorization: `Bearer ${apiKey}` },
-      timeout: 30_000,
-      validateStatus: () => true,
-    });
-    return res.status(upstream.status).json(upstream.data);
+    for (let attempt = 0; attempt < providerKeys.length; attempt += 1) {
+      const apiKey = nextProviderKey();
+      if (!apiKey) break;
+
+      const upstream = await axios({
+        method: "get",
+        url: `${PROVIDER_BASE_URL}/models`,
+        headers: { authorization: `Bearer ${apiKey}` },
+        timeout: 30_000,
+        validateStatus: () => true,
+      });
+
+      if (isUpstreamInvalidKeyResponse(upstream)) continue;
+
+      return res.status(upstream.status).json(upstream.data);
+    }
+
+    return respondUpstreamMisconfigured(res);
   } catch (err) {
     const message = err && err.message ? err.message : "Upstream request failed";
     return res.status(502).json({ error: { message, type: "upstream_error" } });
   }
 });
 
-app.post("/v1/chat/completions", (req, res) => proxyToGroq(req, res, "/chat/completions"));
+app.post("/v1/chat/completions", (req, res) => proxyToUpstream(req, res, "/chat/completions"));
 
 app.post("/api/chat", async (req, res) => {
   const defaultModel =
@@ -338,7 +386,7 @@ app.post("/api/chat", async (req, res) => {
     stream: !!(req.body && req.body.stream),
   };
 
-  return proxyToGroq(req, res, "/chat/completions");
+  return proxyToUpstream(req, res, "/chat/completions");
 });
 
 app.get("/", (req, res) => {

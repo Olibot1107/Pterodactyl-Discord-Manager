@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Voidium AI API Docs</title>
+    <meta name="description" content="Voidium AI API documentation. Get your API key from the Discord bot and call the OpenAI-compatible endpoints." />
+    <link rel="icon" type="image/png" href="https://voidium.uk/icon.png" />
+    <link rel="apple-touch-icon" href="https://voidium.uk/icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700;900&display=swap" rel="stylesheet" />
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        background: #fef7ed;
+        color: #1a1a1a;
+        line-height: 1.6;
+        padding: 20px;
+        min-height: 100vh;
+      }
+      a { color: inherit; text-decoration: none; }
+      a:hover { text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 3px; }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      }
+      .wrap { max-width: 980px; margin: 0 auto; }
+      .hero {
+        margin-bottom: 18px;
+      }
+      .title {
+        font-size: clamp(2.2rem, 4vw, 3.2rem);
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: -0.02em;
+        text-shadow: 4px 4px 0px #fb923c;
+        margin: 0 0 10px;
+      }
+      .sub {
+        margin: 0;
+        font-size: 1.1rem;
+        font-weight: 700;
+        opacity: 0.9;
+      }
+      .k code {
+        background: #fb923c;
+        padding: 0.15rem 0.35rem;
+        border: 3px solid #1a1a1a;
+        box-shadow: 4px 4px 0px #1a1a1a;
+        display: inline-block;
+      }
+      .grid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        align-items: stretch;
+        margin-top: 16px;
+      }
+      .card {
+        border: 4px solid #1a1a1a;
+        background: white;
+        padding: 1.25rem 1.5rem;
+        box-shadow: 8px 8px 0px #fb923c;
+      }
+      .card h2 {
+        margin: 0 0 8px;
+        font-size: 1.2rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      .muted { opacity: .75; font-size: 0.95rem; margin: 0.4rem 0 0; }
+      .section {
+        margin-top: 18px;
+      }
+      .section h3 {
+        margin: 0 0 10px;
+        font-size: 1.1rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+      .list { margin: 0; padding-left: 18px; }
+      .list li { margin: 8px 0; }
+      pre {
+        margin: 10px 0 0;
+        padding: 14px;
+        border: 4px solid #1a1a1a;
+        background: #fff;
+        box-shadow: 8px 8px 0px #1a1a1a;
+        overflow: auto;
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      .btnRow {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        margin-top: 16px;
+      }
+      .btn {
+        width: 100%;
+        background: white;
+        color: #1a1a1a;
+        border: 4px solid #1a1a1a;
+        padding: 1rem 1.25rem;
+        font-weight: 900;
+        font-size: 1.05rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        cursor: pointer;
+        box-shadow: 8px 8px 0px #1a1a1a;
+        transition: transform 0.08s ease, box-shadow 0.08s ease;
+        border-radius: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 64px;
+      }
+      .btn:hover { transform: translate(1px, 1px); box-shadow: 6px 6px 0px #1a1a1a; }
+      .btn.orange { background: #fb923c; }
+      .btn.blue { background: #0ea5e9; }
+      .btn.discord { background: #5865f2; }
+      footer {
+        margin-top: 22px;
+        font-size: 0.95rem;
+        opacity: 0.75;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="hero">
+        <h1 class="title">AI API</h1>
+        <p class="sub">
+          Base URL: <span class="k"><code>https://ai-api.voidium.uk</code></span>
+        </p>
+
+        <div class="btnRow" aria-label="Quick links">
+          <a href="https://voidium.uk/" target="_blank" rel="noopener noreferrer"><button class="btn">Voidium</button></a>
+          <a href="/healthz"><button class="btn blue">Health</button></a>
+          <a href="https://discord.gg/8cdxBEXnbS" target="_blank" rel="noopener noreferrer"><button class="btn discord">Discord</button></a>
+          <a href="https://voidium.uk/status" target="_blank" rel="noopener noreferrer"><button class="btn orange">Status</button></a>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Get Access</h2>
+          <p>In Discord, run <code>/aikey</code> to get your personal API key (1 per account).</p>
+          <p class="muted">If you leave the Discord server, your key is deleted.</p>
+        </section>
+
+        <section class="card">
+          <h2>Auth & Limits</h2>
+          <p>All API endpoints require:</p>
+          <pre><code>Authorization: Bearer &lt;your_api_key&gt;</code></pre>
+          <p class="muted">Rate limit: <code>10 requests / 4 minutes</code> per key.</p>
+        </section>
+      </div>
+
+      <section class="card section">
+        <h2>Endpoints</h2>
+        <ul class="list">
+          <li><code>GET /v1/models</code> — list available models.</li>
+          <li><code>POST /v1/chat/completions</code> — OpenAI-compatible chat completions.</li>
+          <li><code>POST /api/chat</code> — simple wrapper that accepts <code>{"content":"..."}</code> or <code>{"messages":[...]}</code>.</li>
+        </ul>
+      </section>
+
+      <section class="card section">
+        <h2>Example: /api/chat</h2>
+        <pre><code>curl -s https://ai-api.voidium.uk/api/chat \
+  -H "Authorization: Bearer &lt;your_api_key&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Say hello","temperature":0}'</code></pre>
+      </section>
+
+      <section class="card section">
+        <h2>Example: /v1/chat/completions</h2>
+        <pre><code>curl -s https://ai-api.voidium.uk/v1/chat/completions \
+  -H "Authorization: Bearer &lt;your_api_key&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.1-8b-instant",
+    "messages": [{"role":"user","content":"Reply with ok"}],
+    "temperature": 0
+  }'</code></pre>
+        <p class="muted">Tip: set <code>"stream": true</code> and use <code>curl -N</code> for streaming.</p>
+      </section>
+
+      <footer class="card section">
+        <h2>Need Help?</h2>
+        <p class="muted">Ask in the Discord.</p>
+      </footer>
+    </div>
+  </body>
+</html>

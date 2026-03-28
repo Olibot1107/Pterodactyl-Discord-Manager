@@ -1,8 +1,11 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const fs = require('fs');
 
 // Create database file in data directory
-const dbPath = path.join(__dirname, '../data/database.sqlite');
+const dataDir = path.join(__dirname, '../data');
+fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = path.join(dataDir, 'database.sqlite');
 const db = new sqlite3.Database(dbPath);
 
 // Create tables if they don't exist
@@ -144,6 +147,24 @@ db.serialize(() => {
       grantedBy TEXT NOT NULL,
       expiresAt INTEGER NOT NULL,
       createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS aiApiKeys (
+      discordId TEXT PRIMARY KEY,
+      apiKey TEXT UNIQUE NOT NULL,
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS aiRateLimits (
+      apiKey TEXT PRIMARY KEY,
+      windowStart INTEGER NOT NULL,
+      count INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
     );
   `);
@@ -831,6 +852,108 @@ const BoosterGrant = {
   },
 };
 
+// AI API key model functions
+const AiApiKey = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM aiApiKeys WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  create: (data) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(data);
+      const placeholders = keys.map(() => '?').join(',');
+      const values = Object.values(data);
+      db.run(
+        `INSERT INTO aiApiKeys (${keys.join(',')}) VALUES (${placeholders})`,
+        values,
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.run(`DELETE FROM aiApiKeys WHERE ${whereClause}`, values, function(err) {
+        if (err) reject(err);
+        else resolve({ affectedRows: this.changes });
+      });
+    });
+  },
+};
+
+// AI API rate-limit model functions
+const AiRateLimit = {
+  findOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.get(`SELECT * FROM aiRateLimits WHERE ${whereClause}`, values, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  upsert: (data) => {
+    return new Promise((resolve, reject) => {
+      const now = data.updatedAt || Date.now();
+      db.run(
+        `
+          INSERT INTO aiRateLimits (
+            apiKey,
+            windowStart,
+            count,
+            updatedAt
+          )
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(apiKey)
+          DO UPDATE SET
+            windowStart = excluded.windowStart,
+            count = excluded.count,
+            updatedAt = excluded.updatedAt
+        `,
+        [
+          data.apiKey,
+          data.windowStart,
+          data.count,
+          now,
+        ],
+        function(err) {
+          if (err) reject(err);
+          else resolve({ ...data, id: this.lastID });
+        }
+      );
+    });
+  },
+
+  deleteOne: (query) => {
+    return new Promise((resolve, reject) => {
+      const keys = Object.keys(query);
+      const values = Object.values(query);
+      const whereClause = keys.map(key => `${key} = ?`).join(' AND ');
+      db.run(`DELETE FROM aiRateLimits WHERE ${whereClause}`, values, function(err) {
+        if (err) reject(err);
+        else resolve({ affectedRows: this.changes });
+      });
+    });
+  },
+};
+
 // Pending account deletion model functions
 const PendingAccountDeletion = {
   findOne: (query) => {
@@ -926,5 +1049,7 @@ module.exports = {
   ServerState,
   BoosterPremium,
   BoosterGrant,
+  AiApiKey,
+  AiRateLimit,
   PendingAccountDeletion,
 };

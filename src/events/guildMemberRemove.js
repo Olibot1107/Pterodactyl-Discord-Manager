@@ -1,4 +1,5 @@
 const { scheduleAccountDeletion, SEVEN_DAYS_MS } = require("../services/accountDeletion");
+const { revokeAiApiKey } = require("../services/aiApiKeys");
 
 module.exports = async (client, member) => {
   try {
@@ -7,6 +8,11 @@ module.exports = async (client, member) => {
         SEVEN_DAYS_MS / (24 * 60 * 60 * 1000)
       )} days...`
     );
+
+    const aiRevoked = await revokeAiApiKey(member.id).catch(() => false);
+    if (aiRevoked) {
+      console.log(`[GuildMemberRemove] Revoked AI API key for ${member.user.tag}.`);
+    }
 
     const pending = await scheduleAccountDeletion(member.id);
     if (!pending) {

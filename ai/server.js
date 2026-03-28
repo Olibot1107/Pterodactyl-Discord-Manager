@@ -5,6 +5,8 @@ const crypto = require("crypto");
 const axios = require("axios");
 const { db } = require("../src/database/database");
 
+const DB_PATH = path.join(__dirname, "..", "src", "data", "database.sqlite");
+
 const LOG_LEVEL = String(process.env.AI_LOG_LEVEL || "info").toLowerCase();
 const LOG_PROMPTS = String(process.env.AI_LOG_PROMPTS || "").toLowerCase() === "true";
 const LOG_DISCORD_IDS = String(process.env.AI_LOG_DISCORD_IDS || "").toLowerCase() === "true";
@@ -143,36 +145,81 @@ const PROVIDER_BASE_URL =
   "https://api.groq.com/openai/v1";
 
 function parseProviderKeys() {
-  const fromSettings =
-    (settings &&
-      (settings.AI_API_KEYS ||
-        settings.AI_API_KEY ||
-        settings.ai?.apiKeys ||
-        settings.ai?.apiKey ||
-        settings.GROQ_API_KEYS ||
-        settings.GROQ_API_KEY ||
-        settings.groq?.apiKeys ||
-        settings.groq?.apiKey)) ||
-    "";
+  function toKeyList(raw) {
+    if (!raw) return [];
+    const normalized = Array.isArray(raw)
+      ? raw.join(",")
+      : typeof raw === "string"
+        ? raw
+        : String(raw || "");
+    return normalized
+      .split(/[,\s]+/g)
+      .map((k) => k.trim())
+      .filter(Boolean);
+  }
 
-  const raw =
-    fromSettings ||
-    process.env.AI_API_KEYS ||
-    process.env.AI_API_KEY ||
-    process.env.GROQ_API_KEYS ||
-    process.env.GROQ_API_KEY ||
-    "";
-  const normalized =
-    Array.isArray(raw) ? raw.join(",") : typeof raw === "string" ? raw : String(raw || "");
-  const keys = normalized
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
-  const unique = [...new Set(keys)];
-  return unique;
+  // Prefer plural fields first, but merge all discovered keys. This avoids
+  // accidentally selecting a single-key field (e.g. `settings.ai.apiKey`)
+  // when a multi-key field (e.g. `settings.GROQ_API_KEYS`) is also present.
+  const settingsSources = settings
+    ? [
+        ["AI_API_KEYS", settings.AI_API_KEYS],
+        ["ai.apiKeys", settings.ai?.apiKeys],
+        ["GROQ_API_KEYS", settings.GROQ_API_KEYS],
+        ["groq.apiKeys", settings.groq?.apiKeys],
+        ["AI_API_KEY", settings.AI_API_KEY],
+        ["ai.apiKey", settings.ai?.apiKey],
+        ["GROQ_API_KEY", settings.GROQ_API_KEY],
+        ["groq.apiKey", settings.groq?.apiKey],
+      ]
+    : [];
+
+  const envSources = [
+    ["AI_API_KEYS", process.env.AI_API_KEYS],
+    ["GROQ_API_KEYS", process.env.GROQ_API_KEYS],
+    ["AI_API_KEY", process.env.AI_API_KEY],
+    ["GROQ_API_KEY", process.env.GROQ_API_KEY],
+  ];
+
+  const settingsKeys = [];
+  const settingsFieldsUsed = [];
+  for (const [name, value] of settingsSources) {
+    const list = toKeyList(value);
+    if (list.length) settingsFieldsUsed.push({ name, count: list.length });
+    settingsKeys.push(...list);
+  }
+
+  const envKeys = [];
+  const envVarsUsed = [];
+  for (const [name, value] of envSources) {
+    const list = toKeyList(value);
+    if (list.length) envVarsUsed.push({ name, count: list.length });
+    envKeys.push(...list);
+  }
+
+  const merged = [...settingsKeys, ...envKeys];
+  const unique = [...new Set(merged)];
+  const source =
+    settingsKeys.length && envKeys.length
+      ? "settings+env"
+      : settingsKeys.length
+        ? "settings"
+        : envKeys.length
+          ? "env"
+          : "none";
+
+  return {
+    keys: unique,
+    source,
+    detail: {
+      settings: { count: settingsKeys.length, fieldsUsed: settingsFieldsUsed },
+      env: { count: envKeys.length, varsUsed: envVarsUsed },
+    },
+  };
 }
 
-const providerKeys = parseProviderKeys();
+const providerKeyConfig = parseProviderKeys();
+const providerKeys = providerKeyConfig.keys;
 let providerKeyIndex = 0;
 
 function nextProviderKey() {
@@ -184,11 +231,18 @@ function nextProviderKey() {
 
 log("info", "upstream_configured", {
   upstreamKeys: providerKeys.length,
+  keySource: providerKeyConfig.source,
+  settingsKeys: providerKeyConfig.detail?.settings?.count || 0,
+  envKeys: providerKeyConfig.detail?.env?.count || 0,
 });
 
 if (shouldLog("debug")) {
   log("debug", "upstream_details", {
     upstreamBaseUrl: PROVIDER_BASE_URL,
+    keyPrefixes: providerKeys.map((k) => String(k).slice(0, 4)),
+    keyIds: providerKeys.map((k) => safeKeyId(k)),
+    settingsFieldsUsed: providerKeyConfig.detail?.settings?.fieldsUsed || [],
+    envVarsUsed: providerKeyConfig.detail?.env?.varsUsed || [],
   });
 }
 
@@ -624,6 +678,21 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, HOST, () => {
   log("info", "listening", { url: `http://localhost:${PORT}`, bind: `${HOST}:${PORT}` });
+
+  // Startup DB sanity check: helps debug "Invalid API Key" issues without leaking keys.
+  try {
+    log("info", "db_path", { path: DB_PATH, exists: fs.existsSync(DB_PATH) });
+  } catch (err) {
+    log("warn", "db_path_error", { error: String(err?.message || err) });
+  }
+
+  db.get("SELECT COUNT(*) AS count FROM aiApiKeys", (err, row) => {
+    if (err) {
+      log("warn", "db_key_count_error", { error: String(err?.message || err) });
+      return;
+    }
+    log("info", "db_key_count", { keys: Number(row?.count || 0) });
+  });
 });
 
 function shutdown(signal) {

@@ -1,34 +1,55 @@
 module.exports = async (client, reaction, user) => {
   try {
-    if (user.bot) return;
+    console.log(`[MessageReactionAdd] Received from ${user.tag} on message ${reaction.message.id}`);
+
+    if (user.bot) {
+      console.log(`[MessageReactionAdd] User is bot, skipping`);
+      return;
+    }
 
     const message = reaction.message;
-    if (!message.guild) return;
+    if (!message.guild) {
+      console.log(`[MessageReactionAdd] No guild, skipping`);
+      return;
+    }
 
     const botMember = message.guild.members.me;
-    if (!botMember) return;
+    if (!botMember) {
+      console.log(`[MessageReactionAdd] No bot member, skipping`);
+      return;
+    }
+
+    const emoji = reaction.emoji;
+    const emojiStr = emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name;
+    console.log(`[MessageReactionAdd] Emoji: ${emojiStr}`);
 
     const existingBotReaction = message.reactions.cache.find(
-      (r) => r.me && r.emoji.name === reaction.emoji.name
+      (r) => r.me && (r.emoji.id ? r.emoji.id === emoji.id : r.emoji.name === emoji.name)
     );
+    console.log(`[MessageReactionAdd] Existing bot reaction: ${existingBotReaction ? 'yes' : 'no'}`);
 
     if (!existingBotReaction) {
-      await reaction.message.react(reaction.emoji.name);
+      console.log(`[MessageReactionAdd] Adding reaction...`);
+      await reaction.message.react(emojiStr);
+      console.log(`[MessageReactionAdd] Reaction added`);
     }
 
     const userReactions = message.reactions.cache.filter(
-      (r) => !r.me && r.emoji.name === reaction.emoji.name
+      (r) => !r.me && (r.emoji.id ? r.emoji.id === emoji.id : r.emoji.name === emoji.name)
     );
+    console.log(`[MessageReactionAdd] User reactions count: ${userReactions.size}`);
 
     if (userReactions.size === 0) {
       const botReaction = message.reactions.cache.find(
-        (r) => r.me && r.emoji.name === reaction.emoji.name
+        (r) => r.me && (r.emoji.id ? r.emoji.id === emoji.id : r.emoji.name === emoji.name)
       );
       if (botReaction) {
+        console.log(`[MessageReactionAdd] Removing bot reaction...`);
         await botReaction.remove();
+        console.log(`[MessageReactionAdd] Bot reaction removed`);
       }
     }
   } catch (err) {
-    console.error(`[MessageReactionAdd] Error:`, err.message);
+    console.error(`[MessageReactionAdd] Error:`, err.message, err.stack);
   }
 };

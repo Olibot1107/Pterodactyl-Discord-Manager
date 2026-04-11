@@ -1,26 +1,24 @@
 module.exports = async (client, reaction, user) => {
   try {
-    console.log(`[MessageReactionAdd] Received from ${user.tag} on message ${reaction.message.id}`);
+    console.log(`[MessageReactionAdd] Received from ${user.tag}`);
 
     if (user.bot) {
       console.log(`[MessageReactionAdd] User is bot, skipping`);
       return;
     }
 
-    const message = reaction.message;
+    let message = reaction.message;
     if (!message.guild) {
+      if (message.partial) {
+        console.log(`[MessageReactionAdd] Message is partial, fetching...`);
+        message = await message.fetch();
+      }
       console.log(`[MessageReactionAdd] No guild, skipping`);
       return;
     }
 
-    const botMember = message.guild.members.me;
-    if (!botMember) {
-      console.log(`[MessageReactionAdd] No bot member, skipping`);
-      return;
-    }
-
     const emoji = reaction.emoji;
-    const emojiStr = emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name;
+    const emojiStr = emoji.id ? emoji.toString() : emoji.name;
     console.log(`[MessageReactionAdd] Emoji: ${emojiStr}`);
 
     const existingBotReaction = message.reactions.cache.find(
@@ -30,7 +28,7 @@ module.exports = async (client, reaction, user) => {
 
     if (!existingBotReaction) {
       console.log(`[MessageReactionAdd] Adding reaction...`);
-      await reaction.message.react(emojiStr);
+      await message.react(emojiStr);
       console.log(`[MessageReactionAdd] Reaction added`);
     }
 

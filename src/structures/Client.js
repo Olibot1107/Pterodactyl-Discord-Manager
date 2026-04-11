@@ -3,6 +3,7 @@ const {
   Collection,
   GatewayIntentBits,
   ActivityType,
+  Partials
 } = require("discord.js");
 const { ClusterClient } = require("discord-hybrid-sharding");
 const { readdirSync } = require("fs");
@@ -22,7 +23,7 @@ class PteroBot extends Client {
           GatewayIntentBits.GuildPresences,
           GatewayIntentBits.GuildMessageReactions
       ],
-      partials: ["MESSAGE", "REACTION"],
+      partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
       allowedMentions: { parse: ["users", "roles"], repliedUser: false },
       presence: {
         activities: [

@@ -19,7 +19,8 @@ class PteroBot extends Client {
           GatewayIntentBits.GuildMessages,
           GatewayIntentBits.GuildMembers,
           GatewayIntentBits.MessageContent,
-          GatewayIntentBits.GuildPresences
+          GatewayIntentBits.GuildPresences,
+          GatewayIntentBits.GuildMessageReactions
       ],
       allowedMentions: { parse: ["users", "roles"], repliedUser: false },
       presence: {

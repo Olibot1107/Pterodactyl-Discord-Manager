@@ -2,10 +2,6 @@
 module.exports = async (client, reaction, user) => {
   try {
     console.log(`[MessageReactionAdd] Received from ${user.tag}`);
-    if (user.bot) {
-      console.log(`[MessageReactionAdd] User is bot, skipping`);
-      return;
-    }
     
     let message = reaction.message;
     if (!message.guild) {

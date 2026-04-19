@@ -1,6 +1,8 @@
 const { ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
+const { applyNodeMinimumLimitsToServer } = require("../../services/nodeLimitRules");
 const { ptero, serverCreation } = require("../../../settings");
+const { logAction, logError, logWarn } = require("../../structures/logger");
 const {
   buildServerCard,
   buildServerCooldownCard,
@@ -235,6 +237,15 @@ module.exports = {
         start_on_completion: true,
       });
 
+      await applyNodeMinimumLimitsToServer(res.data.attributes.id).catch((err) => {
+        logWarn(`Failed to apply node limit rules to ${res.data.attributes.identifier}: ${err.message}`);
+      });
+
+      logAction(
+        "Server Created",
+        `${serverName} (${res.data.attributes.identifier}) on node rules aware create flow`
+      );
+
       return context.createMessage(
         buildServerCard({
           title: "✔ Server Created!",
@@ -254,7 +265,7 @@ module.exports = {
         })
       );
     } catch (err) {
-      console.error("Error creating server:", err.response?.data || err.message || err);
+      logError(`Error creating server: ${err.message}`);
       return context.createMessage(
         buildServerCard({
           title: "✕ Creation Failed",

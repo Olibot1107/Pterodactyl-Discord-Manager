@@ -17,6 +17,7 @@ const ServerState = require("../models/ServerState");
 const BoosterGrant = require("../models/BoosterGrant");
 const { revokeBoosterPerks } = require("../structures/boosterPerks");
 const { updateServerBuild } = require("../structures/pteroBuild");
+const { syncNodeMinimumLimits } = require("../services/nodeLimitRules");
 const { processExpiredAccountDeletions } = require("../services/accountDeletion");
 
 const NO_SERVER_ROLE_ID = discord.noServerRoleId;
@@ -150,6 +151,22 @@ async function ensureDatabaseLimits() {
     );
   } catch (err) {
     console.error("[BuildSync] Failed to enforce database limits:", err.response?.data || err.message || err);
+  }
+}
+
+async function ensureNodeMinimumLimits() {
+  console.log("[NodeRules] Ensuring configured node minimum limits are applied...");
+
+  try {
+    const result = await syncNodeMinimumLimits();
+    if (!result.scanned) {
+      console.log("[NodeRules] No matching node rules were configured.");
+      return;
+    }
+
+    console.log(`[NodeRules] Checked ${result.scanned} matching servers and updated ${result.updated}.`);
+  } catch (err) {
+    console.error("[NodeRules] Failed to enforce node minimum limits:", err.response?.data || err.message || err);
   }
 }
 
@@ -1007,6 +1024,7 @@ module.exports = async (client) => {
   if (client.cluster.id !== 0) return;
 
   await ensureDatabaseLimits();
+  await ensureNodeMinimumLimits();
 
   // Register slash commands
   try {

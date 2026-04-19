@@ -1,7 +1,9 @@
 const BoosterPremium = require("../models/BoosterPremium");
 const CustomDomain = require("../models/CustomDomain");
 const { updateServerBuild } = require("./pteroBuild");
+const { applyNodeMinimumLimitsToServer } = require("../services/nodeLimitRules");
 const { createProxyAdminClient, getProxyAdminConfig } = require("./ProxyAdmin");
+const { logAction, logWarn } = require("./logger");
 
 async function revokeBoosterPerks({ userId, userTag = "Unknown" }) {
   // Revoke premium server perks if set
@@ -12,23 +14,23 @@ async function revokeBoosterPerks({ userId, userTag = "Unknown" }) {
       try {
         originalLimits = JSON.parse(premium.originalLimits || "{}");
       } catch (parseErr) {
-        console.warn("[Booster] Failed to parse original limits for premium rollback:", parseErr.message);
+        logWarn(`Failed to parse original limits for premium rollback: ${parseErr.message}`);
       }
 
       try {
         await updateServerBuild(premium.serverId, originalLimits);
-        console.log(`[Booster] Reverted premium limits for ${userTag} on ${premium.serverIdentifier}`);
+        logAction("Premium Reverted", `${userTag} on ${premium.serverIdentifier}`);
+        await applyNodeMinimumLimitsToServer(premium.serverId).catch((err) => {
+          logWarn(`Failed to re-apply node minimums for ${premium.serverIdentifier}: ${err.message}`);
+        });
       } catch (updateErr) {
-        console.warn(
-          `[Booster] Failed to revert premium limits for ${premium.serverIdentifier}:`,
-          updateErr.response?.data || updateErr.message
-        );
+        logWarn(`Failed to revert premium limits for ${premium.serverIdentifier}: ${updateErr.message}`);
       }
 
       await BoosterPremium.deleteOne({ discordId: userId });
     }
   } catch (err) {
-    console.warn("[Booster] Failed to revoke premium server:", err.message);
+    logWarn(`Failed to revoke premium server: ${err.message}`);
   }
 
   // Revoke custom domains if set
@@ -37,11 +39,11 @@ async function revokeBoosterPerks({ userId, userTag = "Unknown" }) {
     if (domains.length) {
       const { adminBaseUrl, masterToken } = getProxyAdminConfig();
       if (!adminBaseUrl || !masterToken) {
-        console.warn("[Booster] Custom domain admin not configured; skipping domain removal.");
+        logWarn("Custom domain admin not configured; skipping domain removal.");
       } else {
         const proxyAdmin = createProxyAdminClient();
         if (!proxyAdmin) {
-          console.warn("[Booster] Failed to create proxy admin client; skipping domain removal.");
+          logWarn("Failed to create proxy admin client; skipping domain removal.");
         } else {
           for (const entry of domains) {
             try {
@@ -52,23 +54,17 @@ async function revokeBoosterPerks({ userId, userTag = "Unknown" }) {
               if (res.status === 200 || res.status === 404) {
                 await CustomDomain.deleteOne({ id: entry.id });
               } else {
-                console.warn(
-                  `[Booster] Failed to remove custom domain ${entry.domain}:`,
-                  res?.data || res.status
-                );
+                logWarn(`Failed to remove custom domain ${entry.domain}: ${res?.status}`);
               }
             } catch (removeErr) {
-              console.warn(
-                `[Booster] Failed to remove custom domain ${entry.domain}:`,
-                removeErr.response?.data || removeErr.message
-              );
+              logWarn(`Failed to remove custom domain ${entry.domain}: ${removeErr.message}`);
             }
           }
         }
       }
     }
   } catch (err) {
-    console.warn("[Booster] Failed to revoke custom domains:", err.message);
+    logWarn(`Failed to revoke custom domains: ${err.message}`);
   }
 }
 

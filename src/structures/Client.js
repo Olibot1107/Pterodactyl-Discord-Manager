@@ -28,8 +28,8 @@ class PteroBot extends Client {
       presence: {
         activities: [
           {
-            name: "Voidium Hosting",
-            type: ActivityType.Watching,
+            name: "Hosting your servers",
+            type: ActivityType.Custom,
           },
         ],
       },
@@ -70,6 +70,7 @@ class PteroBot extends Client {
         this[eventName === "ready" ? "once" : "on"](eventName, (...args) =>
           eventHandler(this, ...args)
         );
+        console.log(`Loaded event: ${eventName}`);
       }
 
       await this.login(this.settings.TOKEN);

@@ -50,7 +50,26 @@ A Discord bot for managing user registration, server creation, and administratio
    - Discord bot token
    - MongoDB connection string
    - Admin Discord user ID
-    - Pterodactyl panel URL and API keys
+   - Pterodactyl panel URL and API keys
+   - Optional node-based server rules under `serverCreation.nodeRules`
+
+   Example:
+   ```js
+   serverCreation: {
+     premiumLimits: {
+       memory: 1024,
+       disk: 10240,
+       cpu: 100,
+     },
+     nodeRules: [
+       {
+         match: "Pyro Mega",
+         matchMode: "includes",
+         minimumLimits: { disk: 10240 },
+       },
+     ],
+   }
+   ```
 
 4. **Configure SMTP for email verification:**
    - Edit [`src/structures/sendVerificationEmail.js`](src/structures/sendVerificationEmail.js) and set your SMTP credentials.

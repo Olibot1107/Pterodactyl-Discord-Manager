@@ -1,6 +1,7 @@
 const { ChannelType, EmbedBuilder } = require("discord.js");
 const { discord } = require("../../settings");
 const { revokeBoosterPerks } = require("../structures/boosterPerks");
+const { logAction, logError, logWarn } = require("../structures/logger");
 
 const THANK_YOU_CHANNEL_ID = "1472918619544621070";
 const BOOSTER_ROLE_ID = discord?.boosterRoleId || "1473717031202193408";
@@ -13,19 +14,19 @@ module.exports = async (client, oldMember, newMember) => {
 
     // If the user just started boosting
     if (!oldBoosted && newBoosted) {
-      console.log(`[Booster] ${newMember.user.tag} has started boosting the server!`);
+      logAction("Boost Started", `${newMember.user.tag}`);
 
       // Add the booster role
       if (!newMember.roles.cache.has(BOOSTER_ROLE_ID)) {
         await newMember.roles.add(BOOSTER_ROLE_ID);
-        console.log(`[Booster] Added booster role to ${newMember.user.tag}`);
+        logAction("Role Added", `booster role -> ${newMember.user.tag}`);
       }
 
       // Get the channel to send the thank you message
       const channel = await client.channels.fetch(THANK_YOU_CHANNEL_ID);
 
       if (!channel || channel.type !== ChannelType.GuildText) {
-        console.warn(`[Booster] Channel ${THANK_YOU_CHANNEL_ID} not found or is not a text channel`);
+        logWarn(`Channel ${THANK_YOU_CHANNEL_ID} not found or is not a text channel`);
         return;
       }
 
@@ -63,19 +64,19 @@ module.exports = async (client, oldMember, newMember) => {
 
     // If the user stopped boosting
     if (oldBoosted && !newBoosted) {
-      console.log(`[Booster] ${newMember.user.tag} has stopped boosting the server.`);
+      logAction("Boost Stopped", `${newMember.user.tag}`);
 
       // Remove the booster role
       if (newMember.roles.cache.has(BOOSTER_ROLE_ID)) {
         await newMember.roles.remove(BOOSTER_ROLE_ID);
-        console.log(`[Booster] Removed booster role from ${newMember.user.tag}`);
+        logAction("Role Removed", `booster role <- ${newMember.user.tag}`);
       }
 
       // Get the channel to send the unboost message
       const channel = await client.channels.fetch(THANK_YOU_CHANNEL_ID);
 
       if (!channel || channel.type !== ChannelType.GuildText) {
-        console.warn(`[Booster] Channel ${THANK_YOU_CHANNEL_ID} not found or is not a text channel`);
+        logWarn(`Channel ${THANK_YOU_CHANNEL_ID} not found or is not a text channel`);
         return;
       }
 
@@ -103,6 +104,6 @@ module.exports = async (client, oldMember, newMember) => {
       });
     }
   } catch (error) {
-    console.error(`[Booster] Error handling guild member update:`, error);
+    logError(`Error handling guild member update: ${error.message}`);
   }
 };

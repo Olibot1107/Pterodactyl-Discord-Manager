@@ -2,6 +2,7 @@ const api = require("../structures/Ptero");
 const User = require("../models/User");
 const PendingAccountDeletion = require("../models/PendingAccountDeletion");
 const userRegistry = require("./userRegistry");
+const { logAction, logError, logInfo, logWarn } = require("../structures/logger");
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -74,13 +75,10 @@ async function deletePanelAccountAndServers(pending) {
     if (!serverId) continue;
     try {
       await api.delete(`/servers/${serverId}`);
-      console.log(`[AccountDeletion] Deleted server: ${name} (ID: ${serverId})`);
+      logAction("Server Deleted", `${name} (ID: ${serverId})`);
     } catch (err) {
       if (err.response?.status === 404) continue;
-      console.warn(
-        `[AccountDeletion] Failed to delete server ${name} (ID: ${serverId}):`,
-        err.message
-      );
+      logWarn(`Failed to delete server ${name} (ID: ${serverId}): ${err.message}`);
     }
   }
 
@@ -94,8 +92,9 @@ async function deletePanelAccountAndServers(pending) {
   userRegistry.clearCachedUser(discordId);
   await PendingAccountDeletion.deleteOne({ discordId });
 
-  console.log(
-    `[AccountDeletion] Deleted panel user ${remoteUser?.email || pending.email} (Ptero ID: ${pteroId}) for Discord ID ${discordId}`
+  logAction(
+    "Panel User Deleted",
+    `${remoteUser?.email || pending.email} (Ptero ID: ${pteroId}) for Discord ID ${discordId}`
   );
 }
 
@@ -108,7 +107,7 @@ async function processExpiredAccountDeletions(client, guildId, options = {}) {
 
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) {
-    console.warn("[AccountDeletion] Guild not found; skipping account deletion run.");
+    logWarn("Guild not found; skipping account deletion run.");
     return 0;
   }
 
@@ -120,9 +119,7 @@ async function processExpiredAccountDeletions(client, guildId, options = {}) {
     const member = await guild.members.fetch(discordId).catch(() => null);
     if (member) {
       await PendingAccountDeletion.deleteOne({ discordId });
-      console.log(
-        `[AccountDeletion] ${member.user.tag} rejoined; canceled pending deletion.`
-      );
+      logInfo(`${member.user.tag} rejoined; canceled pending deletion.`);
       continue;
     }
 
@@ -130,11 +127,7 @@ async function processExpiredAccountDeletions(client, guildId, options = {}) {
       await deletePanelAccountAndServers(pending);
       processed += 1;
     } catch (err) {
-      console.error(
-        `[AccountDeletion] Failed to delete Discord ID ${discordId}:`,
-        err.message,
-        err.response?.data || err
-      );
+      logError(`Failed to delete Discord ID ${discordId}: ${err.message}`);
     }
   }
 
@@ -147,4 +140,3 @@ module.exports = {
   processExpiredAccountDeletions,
   SEVEN_DAYS_MS,
 };
-

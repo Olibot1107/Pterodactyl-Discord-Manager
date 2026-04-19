@@ -1,3 +1,6 @@
+const { patchConsole, logInfo, logWarn } = require("../src/structures/logger");
+patchConsole();
+
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -931,16 +934,16 @@ const statusServer = http.createServer(async (req, res) => {
   }
 });
 
-statusServer.listen(STATUS_PORT, () => console.log(`Status API → http://localhost:${STATUS_PORT}`));
+statusServer.listen(STATUS_PORT, () => logInfo(`Status API → http://localhost:${STATUS_PORT}`));
 
 async function bootstrap() {
   try {
     await initHistoryStorage();
-    console.log(`[WebDB] History persistence enabled at ${HISTORY_DB_PATH}`);
+    logInfo(`[WebDB] History persistence enabled at ${HISTORY_DB_PATH}`);
   } catch (err) {
     nodeMonitor.persistenceEnabled = false;
     nodeMonitor.lastError = err.message || "History DB init failed";
-    console.warn("[WebDB] Failed to initialize history DB, using in-memory history only:", err.message || err);
+    logWarn(`Failed to initialize history DB, using in-memory history only: ${err.message || err}`);
   }
 
   runNodeProbeCycle().catch((err) => {

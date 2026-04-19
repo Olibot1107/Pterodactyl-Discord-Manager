@@ -4,6 +4,7 @@ const {
   InteractionType,
   MessageFlags
 } = require("discord.js");
+const { logAction, logError, logWarn } = require("../structures/logger");
 
 module.exports = async (client, interaction) => {
   if (!client.isReady()) return;
@@ -16,7 +17,7 @@ module.exports = async (client, interaction) => {
     try {
       await command.autocomplete({ client, interaction });
     } catch (err) {
-      console.error("Autocomplete handling failed:", err);
+      logError(`Autocomplete handling failed for /${interaction.commandName}: ${err.message}`);
       if (!interaction.responded) {
         await interaction.respond([]);
       }
@@ -85,11 +86,16 @@ module.exports = async (client, interaction) => {
         flags: shouldDeferEphemeral ? MessageFlags.Ephemeral : undefined 
       });
     } catch (err) {
-      console.error("Defer failed:", err);
+      logWarn(`Defer failed for /${interaction.commandName}: ${err.message}`);
       return;
     }
 
     try {
+      logAction(
+        "Command",
+        `/${interaction.commandName} by ${interaction.user.tag}${inGuild ? ` in #${interaction.channel?.name || interaction.channelId}` : " in DM"}`
+      );
+
       // Create context with properly bound methods and preserved references
       if (shouldDeferEphemeral) {
         interaction.createMessage = (opts) => {
@@ -103,8 +109,13 @@ module.exports = async (client, interaction) => {
         interaction.createMessage = (opts) => interaction.followUp(opts);
       }
       await command.run({ client, context: interaction });
+      logAction("Command Complete", `/${interaction.commandName} by ${interaction.user.tag}`);
     } catch (error) {
-      console.error("Command error:", error);
+      logError(`Command error for /${interaction.commandName} by ${interaction.user.tag}: ${error.message}`);
+      logAction(
+        "Command Failed",
+        `/${interaction.commandName} by ${interaction.user.tag}`
+      );
       
       try {
         if (interaction.deferred) {
@@ -126,7 +137,7 @@ module.exports = async (client, interaction) => {
           });
         }
       } catch (replyErr) {
-        console.error("Failed to send error message:", replyErr);
+        logWarn(`Failed to send error message for /${interaction.commandName}: ${replyErr.message}`);
       }
     }
   } else if (interaction.isButton() || interaction.isModalSubmit()) {

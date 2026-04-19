@@ -2,16 +2,18 @@ const { ApplicationCommandOptionType } = require("discord.js");
 const api = require("../../structures/Ptero");
 const BoosterPremium = require("../../models/BoosterPremium");
 const { updateServerBuild, getServerAttributes } = require("../../structures/pteroBuild");
+const { applyNodeMinimumLimitsToServer } = require("../../services/nodeLimitRules");
 const {
   buildServerCard,
   buildServerCooldownCard,
   consumeServerCooldown,
 } = require("../../structures/serverCommandUi");
-const { discord } = require("../../../settings");
+const { discord, serverCreation } = require("../../../settings");
+const { logAction, logError, logWarn } = require("../../structures/logger");
 const userRegistry = require("../../services/userRegistry");
 
 const BOOSTER_ROLE_ID = discord?.boosterRoleId || "1473717031202193408";
-const PREMIUM_LIMITS = {
+const PREMIUM_LIMITS = serverCreation?.premiumLimits || {
   memory: 1024,
   disk: 10240,
   cpu: 100,
@@ -82,7 +84,7 @@ module.exports = {
 
       return interaction.respond(choices);
     } catch (err) {
-      console.error("Premium autocomplete error:", err.response?.data || err);
+      logError(`Premium autocomplete error: ${err.message}`);
       return interaction.respond([]);
     }
   },
@@ -175,6 +177,11 @@ module.exports = {
       };
 
       await updateServerBuild(target.attributes.id, premiumLimits);
+      await applyNodeMinimumLimitsToServer(target.attributes.id).catch((err) => {
+        logWarn(`Failed to apply node limit rules to ${target.attributes.identifier}: ${err.message}`);
+      });
+
+      logAction("Premium Upgraded", `${target.attributes.name} (${target.attributes.identifier})`);
 
       const now = Date.now();
       try {
@@ -190,7 +197,7 @@ module.exports = {
         try {
           await updateServerBuild(target.attributes.id, originalLimits);
         } catch (rollbackErr) {
-          console.warn("[Premium] Failed to rollback limits after DB error:", rollbackErr.message);
+          logWarn(`Failed to rollback limits after DB error: ${rollbackErr.message}`);
         }
         throw dbErr;
       }
@@ -207,7 +214,7 @@ module.exports = {
         })
       );
     } catch (err) {
-      console.error("Premium upgrade error:", err.response?.data || err);
+      logError(`Premium upgrade error: ${err.message}`);
       const detail = err.response?.data?.errors?.[0]?.detail;
       return context.createMessage(
         buildServerCard({
